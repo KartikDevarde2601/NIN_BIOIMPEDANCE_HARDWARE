@@ -5,6 +5,7 @@
 #include <PicoMQTT.h>
 #include <WiFi.h>
 
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,10 +21,10 @@ const char *WIFI_SSID = "Galaxy";
 const char *WIFI_PASS = "kartik2001";
 
 // mux configuration
-ADG706 mux1(1, 2, 3, 4);
-ADG706 mux2(5, 6, 7, 8);
-ADG706 mux3(9, 10, 11, 12);
-ADG706 mux4(13, 14, 15, 16);
+ADG706 mux1(4, 5, 6, 7);
+ADG706 mux2(15, 18, 45, 46);
+ADG706 mux3(35, 36, 37, 38);
+ADG706 mux4(39, 40, 41, 42);
 
 // define varible for AD5940
 #define APPBUFF_SIZE 512
@@ -34,10 +35,10 @@ std::string currentConfig;
 const int MAXVECLIMIT = 50;
 
 // configaration variable
-std::vector<std::string> config{"RIGHTBODY", "LEFTBODY", "UPPERBODY", "LOWERBODY", "FULLBODY"};
-std::vector<int> frequecies{25, 50, 100, 125, 150};
+std::vector<std::string> config{"FULLBODY"};
+std::vector<int> frequecies{100};
 std::string sensortype;
-int datapoints = 50;
+int datapoints = 500;
 bool collectBioimpedance = true;
 uint32_t datacount = 0;
 
@@ -86,6 +87,24 @@ void activate_full_body_mux() {
   mux2.selectChannel(0);
   mux3.selectChannel(0);
   mux4.selectChannel(0);
+}
+
+void activate_full_body_fix_mux() {
+  Serial.println("activate_full_body_fix_mux\n");
+  mux1.selectChannel(1);
+  mux3.selectChannel(1);
+}
+
+void activate_full_body_variable_one() {
+  Serial.println("activate_full_body_variable_one\n");
+  mux2.selectChannel(1);
+  mux4.selectChannel(1);
+}
+
+void activate_full_body_variable_two() {
+  Serial.println("activate_full_body_variable_two\n");
+  mux2.selectChannel(2);
+  mux4.selectChannel(2);
 }
 
 void SendDataToMobile(JsonDocument &payload, const char *topic) {
@@ -266,6 +285,44 @@ bool deserializeMessage(const char *topic, Stream &stream) {
   return true;
 }
 
+bool deserializeStringMessage(std::string input) {
+  // Split using ':'
+  config.clear();
+  frequecies.clear();
+  std::vector<std::string> tokens;
+  std::stringstream ss(input);
+  std::string token;
+
+  while (std::getline(ss, token, ':')) {
+    tokens.push_back(token);
+  }
+
+  if (tokens.size() < 4) {
+    return false;
+  }
+
+  std::string sensorType = tokens[0];
+  std::string configStr = tokens[1];    // "fullbody,rightbody"
+  std::string frequiesStr = tokens[2];  // "100,200,300,500"
+  std::string datapointsStr = tokens[3];
+
+  std::stringstream configStream(configStr);
+  while (std::getline(configStream, token, ',')) {
+    config.push_back(token);
+  }
+
+  std::stringstream freqStream(frequiesStr);
+  while (std::getline(freqStream, token, ',')) {
+    frequecies.push_back(std::stoi(token));
+  }
+
+  datapoints = std::stoi(datapointsStr);
+
+  sensortype = sensorType;
+
+  return true;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(2000);
@@ -283,8 +340,10 @@ void setup() {
   funcMap["LEFTBODY"] = activate_left_body_mux;
   funcMap["UPPERBODY"] = activate_upper_body_mux;
   funcMap["LOWERBODY"] = activate_lower_body_mux;
-  funcMap["FULLBODY"] = activate_full_body_mux;
-
+  // funcMap["FULLBODY"] = activate_full_body_mux;
+  funcMap["FULLBODY_F"] = activate_full_body_fix_mux;
+  funcMap["FULLBODY_V1"] = activate_full_body_variable_one;
+  funcMap["FULLBODY_V2"] = activate_full_body_variable_two;
   // put your setup code here, to run once:
   AD5940_MCUResourceInit(NULL);
 
@@ -305,24 +364,26 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.println("Connecting...");
 
-  // while (WiFi.status() != WL_CONNECTED) {
-  //   if (WiFi.status() == WL_CONNECT_FAILED) {
-  //     Serial.println("Failed to connect to WIFI. Please verify credentials.");
-  //   }
-  //   delay(5000);
-  // }
+  while (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECT_FAILED) {
+      Serial.println("Failed to connect to WIFI. Please verify credentials.");
+    }
+    delay(5000);
+  }
 
-  // Serial.println("WiFi connected");
-  // Serial.println("IP address: " + WiFi.localIP().toString());
+  Serial.println("WiFi connected");
+  Serial.println("IP address: " + WiFi.localIP().toString());
 
   mqtt.subscribe("global/time", [](const char *topic, const char *payload) {
     unsigned long unixTime = strtoul(payload, nullptr, 10);
   });
 
-  mqtt.subscribe("global/command_devices", [](const char *topic, Stream &stream) {
-    if (!deserializeMessage(topic, stream)) {
-      Serial.println("Failed to process message");
+  mqtt.subscribe("global/command_devices", [](const char *topic, const char *payload) {
+    Serial.printf("Received message in topic '%s': %s\n", topic, payload);
+    if (!deserializeStringMessage(payload)) {
+      Serial.printf("Failed to process message");
     } else {
+      Serial.printf("success to process message\n");
       if (sensortype == "bioImpedance") {
         collectBioimpedance = true;
       }
@@ -342,6 +403,30 @@ void loop() {
       for (int j = 0; j < config.size(); j++) {
         freqAD = frequecies[i] * 1000.00;
         currentConfig = config[j];
+
+        // if fullBody then run this
+        if (currentConfig == "FULLBODY") {
+          activate_full_body_fix_mux();
+          std::vector<std::string> variables{"FULLBODY_V1", "FULLBODY_V2"};
+          for (int k = 0; k < variables.size(); k++) {
+            freqAD = frequecies[i] * 1000.00;
+            currentConfig = variables[k];
+            if (funcMap.find(currentConfig) != funcMap.end()) {
+              funcMap[currentConfig]();
+              delay(500);
+              printf("Current Config: %s\n", currentConfig.c_str());
+              printf("Current Freq: %f\n", freqAD);
+              AD5940_Main();
+            } else {
+              printf("Input command for Config is wrong, not found in funcMap\n");
+            }
+          }
+        }
+
+        if (currentConfig == "FULLBODY_V1" || currentConfig == "FULLBODY_V2") {
+          break;
+        }
+
         if (funcMap.find(currentConfig) != funcMap.end()) {
           funcMap[currentConfig]();
           delay(500);
@@ -353,5 +438,7 @@ void loop() {
         }
       }
     }
+    // collectBioimpedance = false;
+    // printf("Data collection completed");
   }
 }
