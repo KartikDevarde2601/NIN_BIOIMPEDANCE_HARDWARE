@@ -30,19 +30,19 @@ ADG706 mux4(39, 40, 41, 42);
 #define APPBUFF_SIZE 512
 uint32_t AppBuff[APPBUFF_SIZE];
 int VECLIMITCOUNTER = 0;
-float freqAD = 0;
+float freqAD;
 std::string currentConfig;
-const int MAXVECLIMIT = 50;
+const int MAXVECLIMIT = 15;
 
 // configaration variable
 std::vector<std::string> config{"FULLBODY"};
 std::vector<int> frequecies{100};
 std::string sensortype;
-int datapoints = 500;
-bool collectBioimpedance = true;
+int datapoints = 45;
+bool collectBioimpedance = false;
 uint32_t datacount = 0;
 
-StaticJsonDocument<512> doc;
+StaticJsonDocument<1024> doc;
 
 std::map<std::string, std::function<void()>> funcMap;
 
@@ -96,15 +96,23 @@ void activate_full_body_fix_mux() {
 }
 
 void activate_full_body_variable_one() {
-  Serial.println("activate_full_body_variable_one\n");
-  mux2.selectChannel(1);
-  mux4.selectChannel(1);
+  // Serial.println("activate_full_body_variable_one\n");
+  mux1.selectChannel(1);  // Set MUX1 to channel 3
+  mux2.selectChannel(1);  // Set MUX2 to channel 4
+
+  mux3.selectChannel(1);  // Set MUX1 to channel 5
+  mux4.selectChannel(1);  // Set MUX2 to channel 6
+  delay(10);
 }
 
 void activate_full_body_variable_two() {
-  Serial.println("activate_full_body_variable_two\n");
+  //  Serial.println("activate_full_body_variable_two\n");
+  mux1.selectChannel(1);  // Set MUX1 to channel 3
+  mux2.selectChannel(1);
+
   mux2.selectChannel(2);
   mux4.selectChannel(2);
+  delay(10);
 }
 
 void SendDataToMobile(JsonDocument &payload, const char *topic) {
@@ -114,44 +122,67 @@ void SendDataToMobile(JsonDocument &payload, const char *topic) {
 }
 
 int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
+  static JsonArray dataArray = JsonArray();  // Static to preserve between function calls
+  static bool arrayInitialized = false;
   float freq;
 
   fImpPol_Type *pImp = (fImpPol_Type *)pData;
   AppBIACtrl(BIACTRL_GETFREQ, &freq);
 
-  doc["sensor"] = "BioImpedance";
-  doc["freq"] = freqAD;
-  doc["config"] = currentConfig;
+  // Initialize the document only on first call or after sending data
+  if (!arrayInitialized) {
+    doc.clear();
+    doc["sensor"] = "BioImpedance";
+    doc["freq"] = freqAD;
+    doc["config"] = currentConfig;
+    dataArray = doc.createNestedArray("data");
+    arrayInitialized = true;
+  }
 
-  JsonArray dataArray = doc.createNestedArray("data");
-
+  // Add data points from current batch
   for (int i = 0; i < DataCount; i++) {
     datacount = datacount + 1;
-    // printf("RzMag: %f Ohm , RzPhase: %f \n",pImp[i].Magnitude,pImp[i].Phase*180/MATH_PI);
-    printf("{\"type\":\"data\",\"count\":%d,\"e1\":%d,\"e2\":%d,\"freq\":%.2f,\"impd\":%f,\"phase\":%f}\n", datacount,
-           1, 1, freq, pImp[i].Magnitude, pImp[i].Phase * 180 / MATH_PI);
 
     // Get the current Unix timestamp with milliseconds
     unsigned long epochSeconds = rtc.getEpoch();
     unsigned long milliseconds = rtc.getMillis() % 1000;
     unsigned long timestampWithMillis = epochSeconds * 1000 + milliseconds;
 
+    // Create data point in the array
     JsonObject sensorData = dataArray.createNestedObject();
-
     sensorData["bioImpedance"] = pImp[i].Magnitude;
     sensorData["phaseAngle"] = pImp[i].Phase * 180 / MATH_PI;
     sensorData["time"] = timestampWithMillis;
 
-    VECLIMITCOUNTER = VECLIMITCOUNTER + 1;
+    VECLIMITCOUNTER++;
+
+    // Check if we've reached the desired buffer size (15 points)
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
+      // Send data to mobile
+      serializeJson(doc, Serial);
+      SendDataToMobile(doc, "nin/bioimpedance");
+      delay(100);
+
+      // Reset for next batch
       VECLIMITCOUNTER = 0;
+      arrayInitialized = false;
     }
-    if (datacount >= datapoints) break;
+
+    // Check if we've reached the maximum points we want to collect
+    if (datacount >= datapoints) {
+      // If there are any unsent points in the buffer, send them now
+      if (VECLIMITCOUNTER > 0) {
+        serializeJson(doc, Serial);
+        SendDataToMobile(doc, "nin/bioimpedance");
+        delay(100);
+      }
+
+      // Reset everything
+      VECLIMITCOUNTER = 0;
+      arrayInitialized = false;
+      break;
+    }
   }
-
-  SendDataToMobile(doc, "bioImpedace");
-
-  //  after sending clear the doc new data is to store
 
   return 0;
 }
@@ -225,6 +256,7 @@ void AD5940BIAStructInit(float SF) {
 void AD5940_Main() {
   datacount = 0;
   uint32_t temp;
+  VECLIMITCOUNTER = 0;  // Ensure counter starts at 0
 
   AD5940PlatformCfg();
 
@@ -248,9 +280,6 @@ void AD5940_Main() {
       AppBIAInit(0, 0);
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
       printf("{\"type\":\"end\"}\n");
-      if (VECLIMITCOUNTER > 0) {
-        VECLIMITCOUNTER = 0;
-      }
       break;
     }
   }
@@ -333,6 +362,8 @@ void setup() {
 
   mux1.begin();
   mux2.begin();
+  mux3.begin();
+  mux4.begin();
 
   Serial.println("ADG706 MUX Initialized");
 
@@ -397,48 +428,60 @@ void setup() {
 
 void loop() {
   mqtt.loop();
-  delay(500);
   if (collectBioimpedance) {
     for (int i = 0; i < frequecies.size(); i++) {
-      for (int j = 0; j < config.size(); j++) {
-        freqAD = frequecies[i] * 1000.00;
-        currentConfig = config[j];
-
-        // if fullBody then run this
-        if (currentConfig == "FULLBODY") {
-          activate_full_body_fix_mux();
-          std::vector<std::string> variables{"FULLBODY_V1", "FULLBODY_V2"};
-          for (int k = 0; k < variables.size(); k++) {
-            freqAD = frequecies[i] * 1000.00;
-            currentConfig = variables[k];
-            if (funcMap.find(currentConfig) != funcMap.end()) {
-              funcMap[currentConfig]();
-              delay(500);
-              printf("Current Config: %s\n", currentConfig.c_str());
-              printf("Current Freq: %f\n", freqAD);
-              AD5940_Main();
-            } else {
-              printf("Input command for Config is wrong, not found in funcMap\n");
-            }
-          }
-        }
-
-        if (currentConfig == "FULLBODY_V1" || currentConfig == "FULLBODY_V2") {
-          break;
-        }
-
-        if (funcMap.find(currentConfig) != funcMap.end()) {
-          funcMap[currentConfig]();
-          delay(500);
-          printf("Current Config: %s\n", currentConfig.c_str());
-          printf("Current Freq: %f\n", freqAD);
-          AD5940_Main();
-        } else {
-          printf("Input command for Config is wrong, not found in funcMap");
-        }
-      }
+      freqAD = frequecies[i] * 1000.00;
+      activate_full_body_variable_one();
+      AD5940_Main();
+      delay(100);
+      activate_full_body_variable_two();
+      AD5940_Main();
     }
-    // collectBioimpedance = false;
-    // printf("Data collection completed");
+    collectBioimpedance = false;
   }
 }
+
+// if (collectBioimpedance) {
+//   for (int i = 0; i < frequecies.size(); i++) {
+//     for (int j = 0; j < config.size(); j++) {
+//       freqAD = frequecies[i] * 1000.00;
+//       currentConfig = config[j];
+
+//       // if fullBody then run this
+//       if (currentConfig == "FULLBODY") {
+//         activate_full_body_fix_mux();
+//         std::vector<std::string> variables{"FULLBODY_V1", "FULLBODY_V2"};
+//         for (int k = 0; k < variables.size(); k++) {
+//           freqAD = frequecies[i] * 1000.00;
+//           currentConfig = variables[k];
+//           if (funcMap.find(currentConfig) != funcMap.end()) {
+//             funcMap[currentConfig]();
+//             delay(500);
+//             printf("Current Config: %s\n", currentConfig.c_str());
+//             printf("Current Freq: %f\n", freqAD);
+//             AD5940_Main();
+//           } else {
+//             printf("Input command for Config is wrong, not found in funcMap\n");
+//           }
+//         }
+//       }
+
+//       if (currentConfig == "FULLBODY_V1" || currentConfig == "FULLBODY_V2") {
+//         break;
+//       }
+
+//       if (funcMap.find(currentConfig) != funcMap.end()) {
+//         funcMap[currentConfig]();
+//         delay(500);
+//         printf("Current Config: %s\n", currentConfig.c_str());
+//         printf("Current Freq: %f\n", freqAD);
+//         AD5940_Main();
+//       } else {
+//         printf("Input command for Config is wrong, not found in funcMap");
+//       }
+//     }
+//   }
+//   // collectBioimpedance = false;
+//   // printf("Data collection completed");
+// }
+//}
