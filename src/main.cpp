@@ -35,10 +35,10 @@ std::string currentConfig;
 const int MAXVECLIMIT = 15;
 
 // configaration variable
-std::vector<std::string> config{"FULLBODY"};
-std::vector<int> frequecies{100};
+std::vector<std::string> config;
+std::vector<int> frequecies;
 std::string sensortype;
-int datapoints = 45;
+int datapoints;
 bool collectBioimpedance = false;
 uint32_t datacount = 0;
 
@@ -50,68 +50,38 @@ std::map<std::string, std::function<void()>> funcMap;
 PicoMQTT::Server mqtt;
 
 void activate_right_body_mux() {
-  printf("activate_right_body_mux\n");
+  // printf("activate_right_body_mux\n");
   mux1.selectChannel(1);
   mux3.selectChannel(1);
-  mux2.selectChannel(3);
-  mux4.selectChannel(3);
-}
-
-void activate_left_body_mux() {
-  printf("activate_full_body_mux\n");
-  mux1.selectChannel(1);
-  mux3.selectChannel(2);
-  mux2.selectChannel(4);
-  mux4.selectChannel(4);
-}
-
-void activate_upper_body_mux() {
-  printf("activate_full_body_mux\n");
-  mux1.selectChannel(1);
-  mux3.selectChannel(1);
-  mux3.selectChannel(2);
-  mux4.selectChannel(3);
-}
-
-void activate_lower_body_mux() {
-  printf("activate_full_body_mux\n");
-  mux1.selectChannel(3);
-  mux3.selectChannel(3);
-  mux2.selectChannel(6);
-  mux4.selectChannel(6);
-}
-
-void activate_full_body_mux() {
-  Serial.println("activate_full_body_mux\n");
-  mux1.selectChannel(0);
-  mux2.selectChannel(0);
-  mux3.selectChannel(0);
-  mux4.selectChannel(0);
-}
-
-void activate_full_body_fix_mux() {
-  Serial.println("activate_full_body_fix_mux\n");
-  mux1.selectChannel(1);
-  mux3.selectChannel(1);
-}
-
-void activate_full_body_variable_one() {
-  // Serial.println("activate_full_body_variable_one\n");
-  mux1.selectChannel(1);  // Set MUX1 to channel 3
-  mux2.selectChannel(1);  // Set MUX2 to channel 4
-
-  mux3.selectChannel(1);  // Set MUX1 to channel 5
-  mux4.selectChannel(1);  // Set MUX2 to channel 6
+  mux2.selectChannel(1);
+  mux4.selectChannel(1);
   delay(10);
 }
 
-void activate_full_body_variable_two() {
-  //  Serial.println("activate_full_body_variable_two\n");
-  mux1.selectChannel(1);  // Set MUX1 to channel 3
-  mux2.selectChannel(1);
-
+void activate_left_body_mux() {
+  // printf("activate_left_body_mux\n");
+  mux1.selectChannel(2);
+  mux3.selectChannel(2);
   mux2.selectChannel(2);
   mux4.selectChannel(2);
+  delay(10);
+}
+
+void activate_upper_body_mux() {
+  // printf("activate_upper_body_mux\n");
+  mux1.selectChannel(1);
+  mux3.selectChannel(3);
+  mux3.selectChannel(1);
+  mux4.selectChannel(3);
+  delay(10);
+}
+
+void activate_lower_body_mux() {
+  // printf("activate_lower_body_mux\n");
+  mux1.selectChannel(3);
+  mux3.selectChannel(5);
+  mux2.selectChannel(3);
+  mux4.selectChannel(5);
   delay(10);
 }
 
@@ -119,6 +89,12 @@ void SendDataToMobile(JsonDocument &payload, const char *topic) {
   auto publish = mqtt.begin_publish(topic, measureJson(payload));
   serializeJson(payload, publish);
   publish.send();
+}
+
+void SendCommandToMobile(const char *payload, const char *topic) {
+  // Serial.printf("Publishing command in topic '%s': %s\n", topic, payload);
+
+  mqtt.publish(topic, payload);
 }
 
 int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
@@ -159,8 +135,8 @@ int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
     // Check if we've reached the desired buffer size (15 points)
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
       // Send data to mobile
-      serializeJson(doc, Serial);
-      SendDataToMobile(doc, "nin/bioimpedance");
+      // serializeJson(doc, Serial);
+      SendDataToMobile(doc, "mobile/bio/data");
       delay(100);
 
       // Reset for next batch
@@ -172,8 +148,8 @@ int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
     if (datacount >= datapoints) {
       // If there are any unsent points in the buffer, send them now
       if (VECLIMITCOUNTER > 0) {
-        serializeJson(doc, Serial);
-        SendDataToMobile(doc, "nin/bioimpedance");
+        // serializeJson(doc, Serial);
+        SendDataToMobile(doc, "mobile/bio/data");
         delay(100);
       }
 
@@ -279,40 +255,40 @@ void AD5940_Main() {
     if (datacount >= datapoints) {
       AppBIAInit(0, 0);
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
-      printf("{\"type\":\"end\"}\n");
+      // printf("{\"type\":\"end\"}\n");
       break;
     }
   }
 }
 
-bool deserializeMessage(const char *topic, Stream &stream) {
-  Serial.printf("Received message in topic '%s':\n", topic);
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, stream);
-  if (error) {
-    Serial.println("Failed to deserialize JSON");
-    return false;
-  }
+// bool deserializeMessage(const char *topic, Stream &stream) {
+//   Serial.printf("Received message in topic '%s':\n", topic);
+//   JsonDocument doc;
+//   DeserializationError error = deserializeJson(doc, stream);
+//   if (error) {
+//     Serial.println("Failed to deserialize JSON");
+//     return false;
+//   }
 
-  JsonArray configArray = doc["config"].as<JsonArray>();
-  config.clear();
-  for (JsonVariant v : configArray) {
-    config.push_back(v.as<std::string>());
-  }
+//   JsonArray configArray = doc["config"].as<JsonArray>();
+//   config.clear();
+//   for (JsonVariant v : configArray) {
+//     config.push_back(v.as<std::string>());
+//   }
 
-  frequecies.clear();
-  JsonArray freqArray = doc["frequecy"].as<JsonArray>();
-  for (JsonVariant v : freqArray) {
-    frequecies.push_back(v.as<int>());
-  }
+//   frequecies.clear();
+//   JsonArray freqArray = doc["frequecy"].as<JsonArray>();
+//   for (JsonVariant v : freqArray) {
+//     frequecies.push_back(v.as<int>());
+//   }
 
-  datapoints = doc["datapoints"];
+//   datapoints = doc["datapoints"];
 
-  sensortype = doc["sensorType"].as<std::string>();
+//   sensortype = doc["sensorType"].as<std::string>();
 
-  Serial.println("Deserialization successful");
-  return true;
-}
+//   Serial.println("Deserialization successful");
+//   return true;
+// }
 
 bool deserializeStringMessage(std::string input) {
   // Split using ':'
@@ -371,10 +347,6 @@ void setup() {
   funcMap["LEFTBODY"] = activate_left_body_mux;
   funcMap["UPPERBODY"] = activate_upper_body_mux;
   funcMap["LOWERBODY"] = activate_lower_body_mux;
-  // funcMap["FULLBODY"] = activate_full_body_mux;
-  funcMap["FULLBODY_F"] = activate_full_body_fix_mux;
-  funcMap["FULLBODY_V1"] = activate_full_body_variable_one;
-  funcMap["FULLBODY_V2"] = activate_full_body_variable_two;
   // put your setup code here, to run once:
   AD5940_MCUResourceInit(NULL);
 
@@ -409,7 +381,7 @@ void setup() {
     unsigned long unixTime = strtoul(payload, nullptr, 10);
   });
 
-  mqtt.subscribe("global/command_devices", [](const char *topic, const char *payload) {
+  mqtt.subscribe("esp/bio/data", [](const char *topic, const char *payload) {
     Serial.printf("Received message in topic '%s': %s\n", topic, payload);
     if (!deserializeStringMessage(payload)) {
       Serial.printf("Failed to process message");
@@ -418,6 +390,13 @@ void setup() {
       if (sensortype == "bioImpedance") {
         collectBioimpedance = true;
       }
+    }
+  });
+
+  mqtt.subscribe("esp/bio/command", [](const char *topic, const char *payload) {
+    String payloadStr = String(payload);
+    if (payloadStr.equals("stop")) {
+      collectBioimpedance = false;
     }
   });
 
@@ -430,58 +409,22 @@ void loop() {
   mqtt.loop();
   if (collectBioimpedance) {
     for (int i = 0; i < frequecies.size(); i++) {
-      freqAD = frequecies[i] * 1000.00;
-      activate_full_body_variable_one();
-      AD5940_Main();
-      delay(100);
-      activate_full_body_variable_two();
-      AD5940_Main();
+      for (int j = 0; j < config.size(); j++) {
+        freqAD = frequecies[i] * 1000.00;
+        currentConfig = config[j];
+
+        if (funcMap.find(currentConfig) != funcMap.end()) {
+          funcMap[currentConfig]();
+          delay(500);
+          // printf("Current Config: %s\n", currentConfig.c_str());
+          //  printf("Current Freq: %f\n", freqAD);
+          AD5940_Main();
+        } else {
+          //  printf("Input command for Config is wrong, not found in funcMap");
+        }
+      }
     }
     collectBioimpedance = false;
+    SendCommandToMobile("completed", "mobile/bio/command");
   }
 }
-
-// if (collectBioimpedance) {
-//   for (int i = 0; i < frequecies.size(); i++) {
-//     for (int j = 0; j < config.size(); j++) {
-//       freqAD = frequecies[i] * 1000.00;
-//       currentConfig = config[j];
-
-//       // if fullBody then run this
-//       if (currentConfig == "FULLBODY") {
-//         activate_full_body_fix_mux();
-//         std::vector<std::string> variables{"FULLBODY_V1", "FULLBODY_V2"};
-//         for (int k = 0; k < variables.size(); k++) {
-//           freqAD = frequecies[i] * 1000.00;
-//           currentConfig = variables[k];
-//           if (funcMap.find(currentConfig) != funcMap.end()) {
-//             funcMap[currentConfig]();
-//             delay(500);
-//             printf("Current Config: %s\n", currentConfig.c_str());
-//             printf("Current Freq: %f\n", freqAD);
-//             AD5940_Main();
-//           } else {
-//             printf("Input command for Config is wrong, not found in funcMap\n");
-//           }
-//         }
-//       }
-
-//       if (currentConfig == "FULLBODY_V1" || currentConfig == "FULLBODY_V2") {
-//         break;
-//       }
-
-//       if (funcMap.find(currentConfig) != funcMap.end()) {
-//         funcMap[currentConfig]();
-//         delay(500);
-//         printf("Current Config: %s\n", currentConfig.c_str());
-//         printf("Current Freq: %f\n", freqAD);
-//         AD5940_Main();
-//       } else {
-//         printf("Input command for Config is wrong, not found in funcMap");
-//       }
-//     }
-//   }
-//   // collectBioimpedance = false;
-//   // printf("Data collection completed");
-// }
-//}
