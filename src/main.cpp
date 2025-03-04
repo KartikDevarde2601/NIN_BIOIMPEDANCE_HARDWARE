@@ -1,7 +1,6 @@
 #include <ADG706.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <ESP32Time.h>
 #include <PicoMQTT.h>
 #include <WiFi.h>
 
@@ -12,9 +11,6 @@
 
 #include "BodyImpedance.h"
 #include "ad5940.h"
-
-// RTC instance
-ESP32Time rtc;
 
 // WiFi Credentials
 const char *WIFI_SSID = "Galaxy";
@@ -119,16 +115,10 @@ int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
   for (int i = 0; i < DataCount; i++) {
     datacount = datacount + 1;
 
-    // Get the current Unix timestamp with milliseconds
-    unsigned long epochSeconds = rtc.getEpoch();
-    unsigned long milliseconds = rtc.getMillis() % 1000;
-    unsigned long timestampWithMillis = epochSeconds * 1000 + milliseconds;
-
     // Create data point in the array
     JsonObject sensorData = dataArray.createNestedObject();
     sensorData["bioImpedance"] = pImp[i].Magnitude;
     sensorData["phaseAngle"] = pImp[i].Phase * 180 / MATH_PI;
-    sensorData["time"] = timestampWithMillis;
 
     VECLIMITCOUNTER++;
 
@@ -377,10 +367,6 @@ void setup() {
   Serial.println("WiFi connected");
   Serial.println("IP address: " + WiFi.localIP().toString());
 
-  mqtt.subscribe("global/time", [](const char *topic, const char *payload) {
-    unsigned long unixTime = strtoul(payload, nullptr, 10);
-  });
-
   mqtt.subscribe("esp/bio/data", [](const char *topic, const char *payload) {
     Serial.printf("Received message in topic '%s': %s\n", topic, payload);
     if (!deserializeStringMessage(payload)) {
@@ -394,13 +380,12 @@ void setup() {
   });
 
   mqtt.subscribe("esp/bio/command", [](const char *topic, const char *payload) {
+    Serial.printf("Received message in topic '%s': %s\n", topic, payload);
     String payloadStr = String(payload);
     if (payloadStr.equals("stop")) {
       collectBioimpedance = false;
     }
   });
-
-  rtc.setTime(1740146300, 0);
 
   mqtt.begin();
 }
