@@ -56,27 +56,27 @@ void activate_right_body_mux() {
 
 void activate_left_body_mux() {
   // printf("activate_left_body_mux\n");
-  mux1.selectChannel(2);
-  mux3.selectChannel(2);
-  mux2.selectChannel(2);
-  mux4.selectChannel(2);
+  mux1.selectChannel(3);
+  mux3.selectChannel(3);
+  mux2.selectChannel(5);
+  mux4.selectChannel(5);
   delay(10);
 }
 
 void activate_upper_body_mux() {
   // printf("activate_upper_body_mux\n");
   mux1.selectChannel(1);
-  mux3.selectChannel(3);
   mux3.selectChannel(1);
-  mux4.selectChannel(3);
+  mux2.selectChannel(2);
+  mux4.selectChannel(2);
   delay(10);
 }
 
 void activate_lower_body_mux() {
   // printf("activate_lower_body_mux\n");
-  mux1.selectChannel(3);
-  mux3.selectChannel(5);
-  mux2.selectChannel(3);
+  mux1.selectChannel(2);
+  mux3.selectChannel(2);
+  mux2.selectChannel(5);
   mux4.selectChannel(5);
   delay(10);
 }
@@ -127,7 +127,7 @@ int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
       // Send data to mobile
       // serializeJson(doc, Serial);
       SendDataToMobile(doc, "mobile/bio/data");
-      delay(100);
+      delay(120);
 
       // Reset for next batch
       VECLIMITCOUNTER = 0;
@@ -140,7 +140,7 @@ int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
       if (VECLIMITCOUNTER > 0) {
         // serializeJson(doc, Serial);
         SendDataToMobile(doc, "mobile/bio/data");
-        delay(100);
+        delay(120);
       }
 
       // Reset everything
