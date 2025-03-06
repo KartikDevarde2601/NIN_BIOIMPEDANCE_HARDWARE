@@ -16,11 +16,17 @@
 const char *WIFI_SSID = "Galaxy";
 const char *WIFI_PASS = "kartik2001";
 
-// mux configuration
+// // mux configuration module
+// ADG706 mux1(4, 5, 6, 7);
+// ADG706 mux2(15, 18, 45, 46);
+// ADG706 mux3(35, 36, 37, 38);
+// ADG706 mux4(39, 40, 41, 42);
+
+// mux configuration board
 ADG706 mux1(4, 5, 6, 7);
-ADG706 mux2(15, 18, 45, 46);
-ADG706 mux3(35, 36, 37, 38);
-ADG706 mux4(39, 40, 41, 42);
+ADG706 mux2(35, 36, 37, 38);
+ADG706 mux3(45, 46, 47, 48);
+ADG706 mux4(8, 9, 10, 3);
 
 // define varible for AD5940
 #define APPBUFF_SIZE 512
@@ -28,14 +34,14 @@ uint32_t AppBuff[APPBUFF_SIZE];
 int VECLIMITCOUNTER = 0;
 float freqAD;
 std::string currentConfig;
-const int MAXVECLIMIT = 15;
+const int MAXVECLIMIT = 10;
 
 // configaration variable
-std::vector<std::string> config;
-std::vector<int> frequecies;
+std::vector<std::string> config{"RIGHTBODY", "LEFTBODY", "UPPERBODY", "LOWERBODY"};
+std::vector<int> frequecies{1};
 std::string sensortype;
-int datapoints;
-bool collectBioimpedance = false;
+int datapoints = 50;
+bool collectBioimpedance = true;
 uint32_t datacount = 0;
 
 StaticJsonDocument<1024> doc;
@@ -49,35 +55,35 @@ void activate_right_body_mux() {
   // printf("activate_right_body_mux\n");
   mux1.selectChannel(1);
   mux3.selectChannel(1);
-  mux2.selectChannel(2);
-  mux4.selectChannel(2);
+  mux2.selectChannel(1);
+  mux4.selectChannel(1);
   delay(10);
 }
 
 void activate_left_body_mux() {
   // printf("activate_left_body_mux\n");
-  mux1.selectChannel(1);
-  mux3.selectChannel(1);
-  mux2.selectChannel(2);
-  mux4.selectChannel(2);
+  mux1.selectChannel(3);
+  mux3.selectChannel(5);
+  mux2.selectChannel(3);
+  mux4.selectChannel(5);
   delay(10);
 }
 
 void activate_upper_body_mux() {
   // printf("activate_upper_body_mux\n");
   mux1.selectChannel(1);
-  mux3.selectChannel(1);
-  mux2.selectChannel(2);
+  mux3.selectChannel(2);
+  mux2.selectChannel(1);
   mux4.selectChannel(2);
   delay(10);
 }
 
 void activate_lower_body_mux() {
   // printf("activate_lower_body_mux\n");
-  mux1.selectChannel(1);
-  mux3.selectChannel(1);
+  mux1.selectChannel(2);
+  mux3.selectChannel(6);
   mux2.selectChannel(2);
-  mux4.selectChannel(2);
+  mux4.selectChannel(6);
   delay(10);
 }
 
@@ -91,66 +97,6 @@ void SendCommandToMobile(const char *payload, const char *topic) {
   // Serial.printf("Publishing command in topic '%s': %s\n", topic, payload);
 
   mqtt.publish(topic, payload);
-}
-
-int32_t BIAShowResult(uint32_t *pData, uint32_t DataCount) {
-  static JsonArray dataArray = JsonArray();  // Static to preserve between function calls
-  static bool arrayInitialized = false;
-  float freq;
-
-  fImpPol_Type *pImp = (fImpPol_Type *)pData;
-  AppBIACtrl(BIACTRL_GETFREQ, &freq);
-
-  // Initialize the document only on first call or after sending data
-  if (!arrayInitialized) {
-    doc.clear();
-    doc["sensor"] = "BioImpedance";
-    doc["freq"] = freqAD;
-    doc["config"] = currentConfig;
-    dataArray = doc.createNestedArray("data");
-    arrayInitialized = true;
-  }
-
-  // Add data points from current batch
-  for (int i = 0; i < DataCount; i++) {
-    datacount = datacount + 1;
-
-    // Create data point in the array
-    JsonObject sensorData = dataArray.createNestedObject();
-    sensorData["bioImpedance"] = pImp[i].Magnitude;
-    sensorData["phaseAngle"] = pImp[i].Phase * 180 / MATH_PI;
-
-    VECLIMITCOUNTER++;
-
-    // Check if we've reached the desired buffer size (15 points)
-    if (VECLIMITCOUNTER >= MAXVECLIMIT) {
-      // Send data to mobile
-      // serializeJson(doc, Serial);
-      SendDataToMobile(doc, "mobile/bio/data");
-      delay(120);
-
-      // Reset for next batch
-      VECLIMITCOUNTER = 0;
-      arrayInitialized = false;
-    }
-
-    // Check if we've reached the maximum points we want to collect
-    if (datacount >= datapoints) {
-      // If there are any unsent points in the buffer, send them now
-      if (VECLIMITCOUNTER > 0) {
-        // serializeJson(doc, Serial);
-        SendDataToMobile(doc, "mobile/bio/data");
-        delay(120);
-      }
-
-      // Reset everything
-      VECLIMITCOUNTER = 0;
-      arrayInitialized = false;
-      break;
-    }
-  }
-
-  return 0;
 }
 
 static int32_t AD5940PlatformCfg(void) {
@@ -202,7 +148,7 @@ static int32_t AD5940PlatformCfg(void) {
   return 0;
 }
 
-void AD5940BIAStructInit(float SF) {
+void AD5940BIAStructInit(float SF, int dlimit) {
   AppBIACfg_Type *pBIACfg;
 
   AppBIAGetCfg(&pBIACfg);
@@ -212,9 +158,9 @@ void AD5940BIAStructInit(float SF) {
 
   pBIACfg->RcalVal = 10000.0;
   pBIACfg->DftNum = DFTNUM_8192;
-  pBIACfg->NumOfData = -1; /* Never stop until you stop it manually by AppBIACtrl() function */
-  pBIACfg->BiaODR = 20;    /* ODR(Sample Rate) 20Hz */
-  pBIACfg->FifoThresh = 4; /* 4 */
+  pBIACfg->NumOfData = dlimit; /* Never stop until you stop it manually by AppBIACtrl() function */
+  pBIACfg->BiaODR = 20;        /* ODR(Sample Rate) 20Hz */
+  pBIACfg->FifoThresh = 4;     /* 4 */
   pBIACfg->SinFreq = SF;
   pBIACfg->ADCSinc3Osr = ADCSINC3OSR_2;
 }
@@ -222,30 +168,63 @@ void AD5940BIAStructInit(float SF) {
 void AD5940_Main() {
   datacount = 0;
   uint32_t temp;
-  VECLIMITCOUNTER = 0;  // Ensure counter starts at 0
 
   AD5940PlatformCfg();
-
-  AD5940BIAStructInit(freqAD); /* Configure your parameters in this function */
-
+  AD5940BIAStructInit(freqAD, datapoints); /* Configure your parameters in this function */
   AppBIAInit(
       AppBuff,
       APPBUFF_SIZE); /* Initialize BIA application. Provide a buffer, which is used to store sequencer commands */
   AppBIACtrl(BIACTRL_START,
              0); /* Control BIA measurement to start. Second parameter has no meaning with this command. */
 
+  JsonArray dataArray = JsonArray();  // Static to preserve between function calls
+  JsonDocument doc;
+  doc["sensor"] = "BioImpedance";
+  doc["freq"] = freqAD;
+  doc["config"] = currentConfig;
+  dataArray = doc.createNestedArray("data");
   while (1) {
-    /* Check if interrupt flag which will be set when interrupt occurred. */
+    // Check if interrupt flag which will be set when interrupt occurred.
     if (AD5940_GetMCUIntFlag()) {
-      AD5940_ClrMCUIntFlag(); /* Clear this flag */
+      AD5940_ClrMCUIntFlag();  // Clear this flag
       temp = APPBUFF_SIZE;
-      AppBIAISR(AppBuff, &temp);    /* Deal with it and provide a buffer to store data we got */
-      BIAShowResult(AppBuff, temp); /* Show the results to UART */
+      AppBIAISR(AppBuff, &temp);  // Deal with it and provide a buffer to store data we got
+
+      fImpPol_Type *pImp = (fImpPol_Type *)AppBuff;
+      AppBIACtrl(BIACTRL_GETFREQ, &freqAD);
+
+      /*Process data*/
+      for (int i = 0; i < temp; i++) {
+        datacount = datacount + 1;
+        printf("Count: %d, Freq: %f, RzMag: %f Ohm , RzPhase: %f \n", datacount, freqAD, pImp[i].Magnitude,
+               pImp[i].Phase * 180 / MATH_PI);
+
+        // Create data point in the array
+        JsonObject sensorData = dataArray.createNestedObject();
+        sensorData["bioImpedance"] = pImp[i].Magnitude;
+        sensorData["phaseAngle"] = pImp[i].Phase * 180 / MATH_PI;
+        VECLIMITCOUNTER = VECLIMITCOUNTER + 1;
+      }
     }
+
+    if (VECLIMITCOUNTER >= MAXVECLIMIT) {
+      SendDataToMobile(doc, "mobile/bio/data");
+      // delay(120);
+      //  Reset for next batch
+      VECLIMITCOUNTER = 0;
+      dataArray = JsonArray();
+      doc.clear();
+    }
+
     if (datacount >= datapoints) {
       AppBIAInit(0, 0);
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
-      // printf("{\"type\":\"end\"}\n");
+      printf("{\"type\":\"end\"}\n");
+      if (VECLIMITCOUNTER > 0) {
+        SendDataToMobile(doc, "mobile/bio/data");
+        // delay(120);
+        VECLIMITCOUNTER = 0;
+      }
       break;
     }
   }
@@ -311,7 +290,7 @@ bool deserializeStringMessage(std::string input) {
     frequecies.push_back(std::stoi(token));
   }
 
-  datapoints = 45;
+  datapoints = 50;
 
   sensortype = sensorType;
 
@@ -354,18 +333,18 @@ void setup() {
   delay(50);
   Serial.println("BIA init!");
 
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.println("Connecting...");
+  // WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // Serial.println("Connecting...");
 
-  while (WiFi.status() != WL_CONNECTED) {
-    if (WiFi.status() == WL_CONNECT_FAILED) {
-      Serial.println("Failed to connect to WIFI. Please verify credentials.");
-    }
-    delay(5000);
-  }
+  // while (WiFi.status() != WL_CONNECTED) {
+  //   if (WiFi.status() == WL_CONNECT_FAILED) {
+  //     Serial.println("Failed to connect to WIFI. Please verify credentials.");
+  //   }
+  //   delay(5000);
+  // }
 
-  Serial.println("WiFi connected");
-  Serial.println("IP address: " + WiFi.localIP().toString());
+  // Serial.println("WiFi connected");
+  // Serial.println("IP address: " + WiFi.localIP().toString());
 
   mqtt.subscribe("esp/bio/data", [](const char *topic, const char *payload) {
     Serial.printf("Received message in topic '%s': %s\n", topic, payload);
@@ -393,6 +372,7 @@ void setup() {
 void loop() {
   mqtt.loop();
   if (collectBioimpedance) {
+    Serial.println("success to process message\n");
     for (int i = 0; i < frequecies.size(); i++) {
       for (int j = 0; j < config.size(); j++) {
         freqAD = frequecies[i] * 1000.00;
@@ -402,7 +382,7 @@ void loop() {
           funcMap[currentConfig]();
           delay(500);
           // printf("Current Config: %s\n", currentConfig.c_str());
-          //  printf("Current Freq: %f\n", freqAD);
+          printf("Current Freq: %f\n", freqAD);
           AD5940_Main();
         } else {
           //  printf("Input command for Config is wrong, not found in funcMap");
