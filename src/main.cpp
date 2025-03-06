@@ -311,7 +311,7 @@ bool deserializeStringMessage(std::string input) {
     frequecies.push_back(std::stoi(token));
   }
 
-  datapoints = std::stoi(datapointsStr);
+  datapoints = 45;
 
   sensortype = sensorType;
 
