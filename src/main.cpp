@@ -49,17 +49,17 @@ void activate_right_body_mux() {
   // printf("activate_right_body_mux\n");
   mux1.selectChannel(1);
   mux3.selectChannel(1);
-  mux2.selectChannel(1);
-  mux4.selectChannel(1);
+  mux2.selectChannel(2);
+  mux4.selectChannel(2);
   delay(10);
 }
 
 void activate_left_body_mux() {
   // printf("activate_left_body_mux\n");
-  mux1.selectChannel(3);
-  mux3.selectChannel(3);
-  mux2.selectChannel(5);
-  mux4.selectChannel(5);
+  mux1.selectChannel(1);
+  mux3.selectChannel(1);
+  mux2.selectChannel(2);
+  mux4.selectChannel(2);
   delay(10);
 }
 
@@ -74,10 +74,10 @@ void activate_upper_body_mux() {
 
 void activate_lower_body_mux() {
   // printf("activate_lower_body_mux\n");
-  mux1.selectChannel(2);
-  mux3.selectChannel(2);
-  mux2.selectChannel(5);
-  mux4.selectChannel(5);
+  mux1.selectChannel(1);
+  mux3.selectChannel(1);
+  mux2.selectChannel(2);
+  mux4.selectChannel(2);
   delay(10);
 }
 
