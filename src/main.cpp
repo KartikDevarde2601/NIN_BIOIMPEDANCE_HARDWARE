@@ -16,17 +16,17 @@
 const char *WIFI_SSID = "Galaxy";
 const char *WIFI_PASS = "kartik2001";
 
-// // mux configuration module
-// ADG706 mux1(4, 5, 6, 7);
-// ADG706 mux2(15, 18, 45, 46);
-// ADG706 mux3(35, 36, 37, 38);
-// ADG706 mux4(39, 40, 41, 42);
-
-// mux configuration board
+// mux configuration module
 ADG706 mux1(4, 5, 6, 7);
-ADG706 mux2(35, 36, 37, 38);
-ADG706 mux3(45, 46, 47, 48);
-ADG706 mux4(8, 9, 10, 3);
+ADG706 mux2(15, 18, 45, 46);
+ADG706 mux3(35, 36, 37, 38);
+ADG706 mux4(39, 40, 41, 42);
+
+// // mux configuration board
+// ADG706 mux1(4, 5, 6, 7);
+// ADG706 mux2(35, 36, 37, 38);
+// ADG706 mux3(45, 46, 47, 48);
+// ADG706 mux4(8, 9, 10, 3);
 
 // define varible for AD5940
 #define APPBUFF_SIZE 512
@@ -34,17 +34,15 @@ uint32_t AppBuff[APPBUFF_SIZE];
 int VECLIMITCOUNTER = 0;
 float freqAD;
 std::string currentConfig;
-const int MAXVECLIMIT = 10;
+const int MAXVECLIMIT = 20;
 
 // configaration variable
-std::vector<std::string> config{"RIGHTBODY", "LEFTBODY", "UPPERBODY", "LOWERBODY"};
-std::vector<int> frequecies{1};
+std::vector<std::string> config;
+std::vector<int> frequecies;
 std::string sensortype;
-int datapoints = 50;
-bool collectBioimpedance = true;
+int datapoints;
+bool collectBioimpedance = false;
 uint32_t datacount = 0;
-
-StaticJsonDocument<1024> doc;
 
 std::map<std::string, std::function<void()>> funcMap;
 
@@ -52,38 +50,38 @@ std::map<std::string, std::function<void()>> funcMap;
 PicoMQTT::Server mqtt;
 
 void activate_right_body_mux() {
-  // printf("activate_right_body_mux\n");
   mux1.selectChannel(1);
   mux3.selectChannel(1);
   mux2.selectChannel(1);
   mux4.selectChannel(1);
+  printf("activate_right_body_mux\n");
   delay(10);
 }
 
 void activate_left_body_mux() {
-  // printf("activate_left_body_mux\n");
   mux1.selectChannel(3);
-  mux3.selectChannel(5);
-  mux2.selectChannel(3);
-  mux4.selectChannel(5);
+  mux3.selectChannel(3);
+  mux2.selectChannel(6);
+  mux4.selectChannel(6);
+  printf("activate_left_body_mux\n");
   delay(10);
 }
 
 void activate_upper_body_mux() {
-  // printf("activate_upper_body_mux\n");
   mux1.selectChannel(1);
-  mux3.selectChannel(2);
-  mux2.selectChannel(1);
+  mux3.selectChannel(1);
+  mux2.selectChannel(2);
   mux4.selectChannel(2);
+  printf("activate_upper_body_mux\n");
   delay(10);
 }
 
 void activate_lower_body_mux() {
-  // printf("activate_lower_body_mux\n");
   mux1.selectChannel(2);
-  mux3.selectChannel(6);
-  mux2.selectChannel(2);
-  mux4.selectChannel(6);
+  mux3.selectChannel(2);
+  mux2.selectChannel(5);
+  mux4.selectChannel(5);
+  printf("activate_lower_body_mux\n");
   delay(10);
 }
 
@@ -209,7 +207,7 @@ void AD5940_Main() {
 
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
       SendDataToMobile(doc, "mobile/bio/data");
-      // delay(120);
+      delay(120);
       //  Reset for next batch
       VECLIMITCOUNTER = 0;
       dataArray = JsonArray();
@@ -222,7 +220,7 @@ void AD5940_Main() {
       printf("{\"type\":\"end\"}\n");
       if (VECLIMITCOUNTER > 0) {
         SendDataToMobile(doc, "mobile/bio/data");
-        // delay(120);
+        delay(120);
         VECLIMITCOUNTER = 0;
       }
       break;
@@ -290,7 +288,7 @@ bool deserializeStringMessage(std::string input) {
     frequecies.push_back(std::stoi(token));
   }
 
-  datapoints = 50;
+  datapoints = 60;
 
   sensortype = sensorType;
 
@@ -333,18 +331,18 @@ void setup() {
   delay(50);
   Serial.println("BIA init!");
 
-  // WiFi.begin(WIFI_SSID, WIFI_PASS);
-  // Serial.println("Connecting...");
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.println("Connecting...");
 
-  // while (WiFi.status() != WL_CONNECTED) {
-  //   if (WiFi.status() == WL_CONNECT_FAILED) {
-  //     Serial.println("Failed to connect to WIFI. Please verify credentials.");
-  //   }
-  //   delay(5000);
-  // }
+  while (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECT_FAILED) {
+      Serial.println("Failed to connect to WIFI. Please verify credentials.");
+    }
+    delay(5000);
+  }
 
-  // Serial.println("WiFi connected");
-  // Serial.println("IP address: " + WiFi.localIP().toString());
+  Serial.println("WiFi connected");
+  Serial.println("IP address: " + WiFi.localIP().toString());
 
   mqtt.subscribe("esp/bio/data", [](const char *topic, const char *payload) {
     Serial.printf("Received message in topic '%s': %s\n", topic, payload);
