@@ -37,10 +37,10 @@ std::string currentConfig;
 const int MAXVECLIMIT = 20;
 
 // configaration variable
-std::vector<std::string> config;
-std::vector<int> frequecies;
+std::vector<std::string> config{"RIGHTBODY", "LEFTBODY"};
+std::vector<int> frequecies{1, 5, 50, 100};
 std::string sensortype;
-int datapoints;
+int datapoints = 55;
 bool collectBioimpedance = false;
 uint32_t datacount = 0;
 
@@ -48,6 +48,30 @@ std::map<std::string, std::function<void()>> funcMap;
 
 // MQTT Configuration
 PicoMQTT::Server mqtt;
+
+void printUsage() {
+  // Get CPU usage
+
+  TickType_t total_ticks = xTaskGetTickCount();  // Get total system ticks
+
+  TickType_t task_ticks = 0;  // Store task ticks
+
+  task_ticks = xTaskGetTickCount();  // Get current task ticks
+
+  float cpu_usage = (float)task_ticks / total_ticks * 100;
+
+  // Get RAM usage
+
+  size_t free_heap = ESP.getFreeHeap();
+
+  Serial.print("CPU Usage: ");
+
+  Serial.print(cpu_usage);
+
+  Serial.print("%  -  Free RAM: ");
+
+  Serial.println(free_heap);
+}
 
 void activate_right_body_mux() {
   mux1.selectChannel(1);
@@ -175,12 +199,18 @@ void AD5940_Main() {
   AppBIACtrl(BIACTRL_START,
              0); /* Control BIA measurement to start. Second parameter has no meaning with this command. */
 
-  JsonArray dataArray = JsonArray();  // Static to preserve between function calls
   JsonDocument doc;
+
+  struct BioPhaseData {
+    float bioImpedance;
+    float phaseAngle;
+  };
+
+  std::vector<BioPhaseData> sensorData;
+
   doc["sensor"] = "BioImpedance";
   doc["freq"] = freqAD;
   doc["config"] = currentConfig;
-  dataArray = doc.createNestedArray("data");
   while (1) {
     // Check if interrupt flag which will be set when interrupt occurred.
     if (AD5940_GetMCUIntFlag()) {
@@ -194,24 +224,33 @@ void AD5940_Main() {
       /*Process data*/
       for (int i = 0; i < temp; i++) {
         datacount = datacount + 1;
-        printf("Count: %d, Freq: %f, RzMag: %f Ohm , RzPhase: %f \n", datacount, freqAD, pImp[i].Magnitude,
-               pImp[i].Phase * 180 / MATH_PI);
+        // printf("Count: %d, Freq: %f, RzMag: %f Ohm , RzPhase: %f \n", datacount, freqAD, pImp[i].Magnitude,
+        //        pImp[i].Phase * 180 / MATH_PI);
 
-        // Create data point in the array
-        JsonObject sensorData = dataArray.createNestedObject();
-        sensorData["bioImpedance"] = pImp[i].Magnitude;
-        sensorData["phaseAngle"] = pImp[i].Phase * 180 / MATH_PI;
+        BioPhaseData temp;
+        temp.bioImpedance = pImp[i].Magnitude;
+        temp.phaseAngle = pImp[i].Phase * 180 / MATH_PI;
+        sensorData.push_back(temp);
         VECLIMITCOUNTER = VECLIMITCOUNTER + 1;
       }
     }
 
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
+      JsonArray dataArray = doc.createNestedArray("data");
+      for (const auto &sData : sensorData) {
+        JsonObject entry = dataArray.createNestedObject();
+        entry["bioImpedance"] = sData.bioImpedance;
+        entry["phaseAngle"] = sData.phaseAngle;
+      }
       SendDataToMobile(doc, "mobile/bio/data");
+      // Serial.printf("batch:::::");
+      // serializeJson(doc, Serial);
+      // Serial.println();  // Newline for readability
+      // //  Reset for next batch
       delay(120);
-      //  Reset for next batch
       VECLIMITCOUNTER = 0;
-      dataArray = JsonArray();
       doc.clear();
+      sensorData.clear();
     }
 
     if (datacount >= datapoints) {
@@ -219,9 +258,20 @@ void AD5940_Main() {
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
       printf("{\"type\":\"end\"}\n");
       if (VECLIMITCOUNTER > 0) {
-        SendDataToMobile(doc, "mobile/bio/data");
+        JsonArray dataArray = doc.createNestedArray("data");
+        for (const auto &sData : sensorData) {
+          JsonObject entry = dataArray.createNestedObject();
+          entry["bioImpedance"] = sData.bioImpedance;
+          entry["phaseAngle"] = sData.phaseAngle;
+        }
+        // SendDataToMobile(doc, "mobile/bio/data");
+        // Serial.printf("batch:::::");
+        // serializeJson(doc, Serial);
+        // Serial.println();  // Newline for readability
         delay(120);
         VECLIMITCOUNTER = 0;
+        doc.clear();
+        sensorData.clear();
       }
       break;
     }
@@ -369,7 +419,8 @@ void setup() {
 
 void loop() {
   mqtt.loop();
-  if (collectBioimpedance) {
+  printUsage();
+  if (true) {
     Serial.println("success to process message\n");
     for (int i = 0; i < frequecies.size(); i++) {
       for (int j = 0; j < config.size(); j++) {
@@ -378,8 +429,7 @@ void loop() {
 
         if (funcMap.find(currentConfig) != funcMap.end()) {
           funcMap[currentConfig]();
-          delay(500);
-          // printf("Current Config: %s\n", currentConfig.c_str());
+          printf("Current Config: %s\n", currentConfig.c_str());
           printf("Current Freq: %f\n", freqAD);
           AD5940_Main();
         } else {
