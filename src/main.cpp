@@ -37,10 +37,10 @@ std::string currentConfig;
 const int MAXVECLIMIT = 20;
 
 // configaration variable
-std::vector<std::string> config{"RIGHTBODY", "LEFTBODY"};
-std::vector<int> frequecies{1, 5, 50, 100};
+std::vector<std::string> config;
+std::vector<int> frequecies;
 std::string sensortype;
-int datapoints = 55;
+int datapoints;
 bool collectBioimpedance = false;
 uint32_t datacount = 0;
 
@@ -48,30 +48,6 @@ std::map<std::string, std::function<void()>> funcMap;
 
 // MQTT Configuration
 PicoMQTT::Server mqtt;
-
-void printUsage() {
-  // Get CPU usage
-
-  TickType_t total_ticks = xTaskGetTickCount();  // Get total system ticks
-
-  TickType_t task_ticks = 0;  // Store task ticks
-
-  task_ticks = xTaskGetTickCount();  // Get current task ticks
-
-  float cpu_usage = (float)task_ticks / total_ticks * 100;
-
-  // Get RAM usage
-
-  size_t free_heap = ESP.getFreeHeap();
-
-  Serial.print("CPU Usage: ");
-
-  Serial.print(cpu_usage);
-
-  Serial.print("%  -  Free RAM: ");
-
-  Serial.println(free_heap);
-}
 
 void activate_right_body_mux() {
   mux1.selectChannel(1);
@@ -243,10 +219,10 @@ void AD5940_Main() {
         entry["phaseAngle"] = sData.phaseAngle;
       }
       SendDataToMobile(doc, "mobile/bio/data");
-      // Serial.printf("batch:::::");
-      // serializeJson(doc, Serial);
-      // Serial.println();  // Newline for readability
-      // //  Reset for next batch
+      Serial.printf("batch:::::");
+      serializeJson(doc, Serial);
+      Serial.println();  // Newline for readability
+      //  Reset for next batch
       delay(120);
       VECLIMITCOUNTER = 0;
       doc.clear();
@@ -256,7 +232,7 @@ void AD5940_Main() {
     if (datacount >= datapoints) {
       AppBIAInit(0, 0);
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
-      printf("{\"type\":\"end\"}\n");
+
       if (VECLIMITCOUNTER > 0) {
         JsonArray dataArray = doc.createNestedArray("data");
         for (const auto &sData : sensorData) {
@@ -264,15 +240,16 @@ void AD5940_Main() {
           entry["bioImpedance"] = sData.bioImpedance;
           entry["phaseAngle"] = sData.phaseAngle;
         }
-        // SendDataToMobile(doc, "mobile/bio/data");
-        // Serial.printf("batch:::::");
-        // serializeJson(doc, Serial);
-        // Serial.println();  // Newline for readability
+        SendDataToMobile(doc, "mobile/bio/data");
+        Serial.printf("batch:::::");
+        serializeJson(doc, Serial);
+        Serial.println();  // Newline for readability
         delay(120);
         VECLIMITCOUNTER = 0;
         doc.clear();
         sensorData.clear();
       }
+      printf("{\"type\":\"end\"}\n");
       break;
     }
   }
@@ -345,9 +322,20 @@ bool deserializeStringMessage(std::string input) {
   return true;
 }
 
+void wifiEvent(WiFiEvent_t event) {
+  if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+    Serial.println("WiFi disconnected!");
+    collectBioimpedance = false;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(2000);
+
+  // Register the WiFi event callback
+  WiFi.onEvent(wifiEvent);
+  WiFi.setAutoReconnect(false);
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -419,9 +407,7 @@ void setup() {
 
 void loop() {
   mqtt.loop();
-  printUsage();
-  if (true) {
-    Serial.println("success to process message\n");
+  if (collectBioimpedance) {
     for (int i = 0; i < frequecies.size(); i++) {
       for (int j = 0; j < config.size(); j++) {
         freqAD = frequecies[i] * 1000.00;
