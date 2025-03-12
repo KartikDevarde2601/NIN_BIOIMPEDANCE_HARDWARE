@@ -11,10 +11,77 @@
 
 #include "BodyImpedance.h"
 #include "ad5940.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_wpa2.h"
+#include "nvs_flash.h"
 
-// WiFi Credentials
-const char *WIFI_SSID = "Galaxy";
-const char *WIFI_PASS = "kartik2001";
+#define WIFI_SSID "wifi@iiith"
+#define EAP_IDENTITY "kartik.devarde@ihub-data.iiit.ac.in"
+#define EAP_PASSWORD "Kartik@2001"
+
+static const char *TAG = "IIITH-IHUB-WiFi-MM";
+static EventGroupHandle_t wifi_event_group;
+const int WIFI_CONNECTED_BIT = BIT0;
+
+static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    ESP_LOGI(TAG, "WiFi Started, Connecting...");
+    esp_wifi_connect();
+  } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    ESP_LOGW(TAG, "Disconnected, Retrying...");
+    esp_wifi_connect();
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    ESP_LOGI(TAG, "Connected! IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
+    Serial.print("Assigned IP Address: ");
+    Serial.println(ip4addr_ntoa((const ip4_addr_t *)&event->ip_info.ip));
+    xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+  }
+}
+
+bool wifi_init() {
+  wifi_event_group = xEventGroupCreate();
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ESP_ERROR_CHECK(nvs_flash_init());
+  }
+
+  ESP_LOGI(TAG, "Initializing WiFi...");
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  esp_netif_create_default_wifi_sta();
+
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+  wifi_config_t wifi_config = {};
+  strcpy((char *)wifi_config.sta.ssid, WIFI_SSID);
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)EAP_IDENTITY, strlen(EAP_IDENTITY));
+  esp_wifi_sta_wpa2_ent_set_username((uint8_t *)EAP_IDENTITY, strlen(EAP_IDENTITY));
+  esp_wifi_sta_wpa2_ent_set_password((uint8_t *)EAP_PASSWORD, strlen(EAP_PASSWORD));
+  esp_wifi_sta_wpa2_ent_enable();
+
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
+  ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
+
+  ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_LOGI(TAG, "Waiting for connection...");
+  EventBits_t bits = xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+  if (bits & WIFI_CONNECTED_BIT) {
+    Serial.println("WiFi Connected");
+    return true;
+  } else {
+    Serial.println("WiFi Connection Failed");
+    return false;
+  }
+}
 
 // mux configuration module
 ADG706 mux1(4, 5, 6, 7);
@@ -47,7 +114,7 @@ uint32_t datacount = 0;
 std::map<std::string, std::function<void()>> funcMap;
 
 // MQTT Configuration
-PicoMQTT::Server mqtt;
+PicoMQTT::Client mqtt("10.2.216.208");
 
 void activate_right_body_mux() {
   mux1.selectChannel(1);
@@ -182,7 +249,10 @@ void AD5940_Main() {
     float phaseAngle;
   };
 
-  std::vector<BioPhaseData> sensorData;
+  // Create a fixed-size array to store the sensor data.
+  BioPhaseData sensorData[datapoints];
+  // Index to track the current count of data entries.
+  uint32_t sensorDataIndex = 0;
 
   doc["sensor"] = "BioImpedance";
   doc["freq"] = freqAD;
@@ -197,57 +267,60 @@ void AD5940_Main() {
       fImpPol_Type *pImp = (fImpPol_Type *)AppBuff;
       AppBIACtrl(BIACTRL_GETFREQ, &freqAD);
 
-      /*Process data*/
+      /* Process data */
       for (int i = 0; i < temp; i++) {
-        datacount = datacount + 1;
-        // printf("Count: %d, Freq: %f, RzMag: %f Ohm , RzPhase: %f \n", datacount, freqAD, pImp[i].Magnitude,
-        //        pImp[i].Phase * 180 / MATH_PI);
-
-        BioPhaseData temp;
-        temp.bioImpedance = pImp[i].Magnitude;
-        temp.phaseAngle = pImp[i].Phase * 180 / MATH_PI;
-        sensorData.push_back(temp);
-        VECLIMITCOUNTER = VECLIMITCOUNTER + 1;
+        datacount++;  // Update the total data count
+        BioPhaseData tempData;
+        tempData.bioImpedance = pImp[i].Magnitude;
+        tempData.phaseAngle = pImp[i].Phase * 180 / MATH_PI;
+        // Store data if we haven't exceeded the fixed size
+        if (sensorDataIndex < datapoints) {
+          sensorData[sensorDataIndex++] = tempData;
+        }
+        VECLIMITCOUNTER++;
       }
     }
 
+    // When the accumulated data count in this batch reaches the limit, send it.
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
       JsonArray dataArray = doc.createNestedArray("data");
-      for (const auto &sData : sensorData) {
+      for (uint32_t i = 0; i < sensorDataIndex; i++) {
         JsonObject entry = dataArray.createNestedObject();
-        entry["bioImpedance"] = sData.bioImpedance;
-        entry["phaseAngle"] = sData.phaseAngle;
+        entry["bioImpedance"] = sensorData[i].bioImpedance;
+        entry["phaseAngle"] = sensorData[i].phaseAngle;
       }
       SendDataToMobile(doc, "mobile/bio/data");
-      Serial.printf("batch:::::");
-      serializeJson(doc, Serial);
-      Serial.println();  // Newline for readability
-      //  Reset for next batch
-      delay(120);
+      // Serial.printf("batch:::::");
+      // serializeJson(doc, Serial);
+      // Serial.println();  // Newline for readability
+
+      // Reset for the next batch
+      delay(50);
       VECLIMITCOUNTER = 0;
       doc.clear();
-      sensorData.clear();
+      sensorDataIndex = 0;
     }
 
+    // When the total number of datapoints is reached, shut down.
     if (datacount >= datapoints) {
       AppBIAInit(0, 0);
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
 
       if (VECLIMITCOUNTER > 0) {
         JsonArray dataArray = doc.createNestedArray("data");
-        for (const auto &sData : sensorData) {
+        for (uint32_t i = 0; i < sensorDataIndex; i++) {
           JsonObject entry = dataArray.createNestedObject();
-          entry["bioImpedance"] = sData.bioImpedance;
-          entry["phaseAngle"] = sData.phaseAngle;
+          entry["bioImpedance"] = sensorData[i].bioImpedance;
+          entry["phaseAngle"] = sensorData[i].phaseAngle;
         }
-        SendDataToMobile(doc, "mobile/bio/data");
-        Serial.printf("batch:::::");
-        serializeJson(doc, Serial);
-        Serial.println();  // Newline for readability
-        delay(120);
+        // SendDataToMobile(doc, "mobile/bio/data");
+        // Serial.printf("batch:::::");
+        // serializeJson(doc, Serial);
+        // Serial.println();  // Newline for readability
+        delay(50);
         VECLIMITCOUNTER = 0;
         doc.clear();
-        sensorData.clear();
+        sensorDataIndex = 0;
       }
       printf("{\"type\":\"end\"}\n");
       break;
@@ -333,13 +406,11 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  // Register the WiFi event callback
-  WiFi.onEvent(wifiEvent);
-  WiFi.setAutoReconnect(false);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
+  bool wifi_connected = wifi_init();
+  if (!wifi_connected) {
+    Serial.println("Failed to connect to WiFi");
+    return;
+  }
 
   mux1.begin();
   mux2.begin();
@@ -368,19 +439,6 @@ void setup() {
   Serial.println("AD5940 initialised!\n");
   delay(50);
   Serial.println("BIA init!");
-
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.println("Connecting...");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    if (WiFi.status() == WL_CONNECT_FAILED) {
-      Serial.println("Failed to connect to WIFI. Please verify credentials.");
-    }
-    delay(5000);
-  }
-
-  Serial.println("WiFi connected");
-  Serial.println("IP address: " + WiFi.localIP().toString());
 
   mqtt.subscribe("esp/bio/data", [](const char *topic, const char *payload) {
     Serial.printf("Received message in topic '%s': %s\n", topic, payload);
@@ -423,7 +481,7 @@ void loop() {
         }
       }
     }
-    collectBioimpedance = false;
-    SendCommandToMobile("completed", "mobile/bio/command");
+    // collectBioimpedance = false;
+    // SendCommandToMobile("completed", "mobile/bio/command");
   }
 }
