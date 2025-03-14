@@ -1,8 +1,6 @@
 #include <ADG706.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <PicoMQTT.h>
-#include <WiFi.h>
 
 #include <sstream>
 #include <string>
@@ -11,77 +9,6 @@
 
 #include "BodyImpedance.h"
 #include "ad5940.h"
-#include "esp_event.h"
-#include "esp_log.h"
-#include "esp_wifi.h"
-#include "esp_wpa2.h"
-#include "nvs_flash.h"
-
-#define WIFI_SSID "wifi@iiith"
-#define EAP_IDENTITY "kartik.devarde@ihub-data.iiit.ac.in"
-#define EAP_PASSWORD "Kartik@2001"
-
-static const char *TAG = "IIITH-IHUB-WiFi-MM";
-static EventGroupHandle_t wifi_event_group;
-const int WIFI_CONNECTED_BIT = BIT0;
-
-static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data) {
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-    ESP_LOGI(TAG, "WiFi Started, Connecting...");
-    esp_wifi_connect();
-  } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-    ESP_LOGW(TAG, "Disconnected, Retrying...");
-    esp_wifi_connect();
-  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-    ESP_LOGI(TAG, "Connected! IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
-    Serial.print("Assigned IP Address: ");
-    Serial.println(ip4addr_ntoa((const ip4_addr_t *)&event->ip_info.ip));
-    xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
-  }
-}
-
-bool wifi_init() {
-  wifi_event_group = xEventGroupCreate();
-  esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    ESP_ERROR_CHECK(nvs_flash_init());
-  }
-
-  ESP_LOGI(TAG, "Initializing WiFi...");
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_create_default_wifi_sta();
-
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-
-  wifi_config_t wifi_config = {};
-  strcpy((char *)wifi_config.sta.ssid, WIFI_SSID);
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-
-  esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)EAP_IDENTITY, strlen(EAP_IDENTITY));
-  esp_wifi_sta_wpa2_ent_set_username((uint8_t *)EAP_IDENTITY, strlen(EAP_IDENTITY));
-  esp_wifi_sta_wpa2_ent_set_password((uint8_t *)EAP_PASSWORD, strlen(EAP_PASSWORD));
-  esp_wifi_sta_wpa2_ent_enable();
-
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
-
-  ESP_ERROR_CHECK(esp_wifi_start());
-  ESP_LOGI(TAG, "Waiting for connection...");
-  EventBits_t bits = xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
-
-  if (bits & WIFI_CONNECTED_BIT) {
-    Serial.println("WiFi Connected");
-    return true;
-  } else {
-    Serial.println("WiFi Connection Failed");
-    return false;
-  }
-}
 
 // mux configuration module
 // ADG706 mux1(4, 5, 6, 7);
@@ -111,10 +38,7 @@ int datapoints;
 bool collectBioimpedance = false;
 uint32_t datacount = 0;
 
-std::map<std::string, std::function<void()>> funcMap;
-
-// MQTT Configuration
-PicoMQTT::Client mqtt("10.2.216.208");
+std::unordered_map<std::string, std::function<void()>> funcMap;
 
 void activate_right_body_mux() {
   mux1.selectChannel(1);
@@ -150,18 +74,6 @@ void activate_lower_body_mux() {
   mux4.selectChannel(5);
   printf("activate_lower_body_mux\n");
   delay(10);
-}
-
-void SendDataToMobile(JsonDocument &payload, const char *topic) {
-  auto publish = mqtt.begin_publish(topic, measureJson(payload));
-  serializeJson(payload, publish);
-  publish.send();
-}
-
-void SendCommandToMobile(const char *payload, const char *topic) {
-  // Serial.printf("Publishing command in topic '%s': %s\n", topic, payload);
-
-  mqtt.publish(topic, payload);
 }
 
 static int32_t AD5940PlatformCfg(void) {
@@ -289,7 +201,6 @@ void AD5940_Main() {
         entry["bioImpedance"] = sensorData[i].bioImpedance;
         entry["phaseAngle"] = sensorData[i].phaseAngle;
       }
-      SendDataToMobile(doc, "mobile/bio/data");
       // Serial.printf("batch:::::");
       // serializeJson(doc, Serial);
       // Serial.println();  // Newline for readability
@@ -399,12 +310,6 @@ void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  bool wifi_connected = wifi_init();
-  if (!wifi_connected) {
-    Serial.println("Failed to connect to WiFi");
-    return;
-  }
-
   mux1.begin();
   mux2.begin();
   mux3.begin();
@@ -432,32 +337,9 @@ void setup() {
   Serial.println("AD5940 initialised!\n");
   delay(50);
   Serial.println("BIA init!");
-
-  mqtt.subscribe("esp/bio/data", [](const char *topic, const char *payload) {
-    Serial.printf("Received message in topic '%s': %s\n", topic, payload);
-    if (!deserializeStringMessage(payload)) {
-      Serial.printf("Failed to process message");
-    } else {
-      Serial.printf("success to process message\n");
-      if (sensortype == "bioImpedance") {
-        collectBioimpedance = true;
-      }
-    }
-  });
-
-  mqtt.subscribe("esp/bio/command", [](const char *topic, const char *payload) {
-    Serial.printf("Received message in topic '%s': %s\n", topic, payload);
-    String payloadStr = String(payload);
-    if (payloadStr.equals("stop")) {
-      collectBioimpedance = false;
-    }
-  });
-
-  mqtt.begin();
 }
 
 void loop() {
-  mqtt.loop();
   if (collectBioimpedance) {
     for (int i = 0; i < frequecies.size(); i++) {
       for (int j = 0; j < config.size(); j++) {
