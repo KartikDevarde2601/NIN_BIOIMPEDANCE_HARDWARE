@@ -84,16 +84,16 @@ bool wifi_init() {
 }
 
 // mux configuration module
-ADG706 mux1(4, 5, 6, 7);
-ADG706 mux2(15, 18, 45, 46);
-ADG706 mux3(35, 36, 37, 38);
-ADG706 mux4(39, 40, 41, 42);
-
-// // mux configuration board
 // ADG706 mux1(4, 5, 6, 7);
-// ADG706 mux2(35, 36, 37, 38);
-// ADG706 mux3(45, 46, 47, 48);
-// ADG706 mux4(8, 9, 10, 3);
+// ADG706 mux2(15, 18, 45, 46);
+// ADG706 mux3(35, 36, 37, 38);
+// ADG706 mux4(39, 40, 41, 42);
+
+// mux configuration board
+ADG706 mux1(4, 5, 6, 7);
+ADG706 mux2(35, 36, 37, 38);
+ADG706 mux3(45, 46, 47, 48);
+ADG706 mux4(8, 9, 10, 3);
 
 // define varible for AD5940
 #define APPBUFF_SIZE 512
@@ -393,13 +393,6 @@ bool deserializeStringMessage(std::string input) {
   sensortype = sensorType;
 
   return true;
-}
-
-void wifiEvent(WiFiEvent_t event) {
-  if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
-    Serial.println("WiFi disconnected!");
-    collectBioimpedance = false;
-  }
 }
 
 void setup() {
