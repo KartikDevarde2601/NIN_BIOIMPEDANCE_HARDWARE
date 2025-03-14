@@ -1,6 +1,10 @@
 #include <ADG706.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <BLE2902.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
 
 #include <sstream>
 #include <string>
@@ -9,6 +13,59 @@
 
 #include "BodyImpedance.h"
 #include "ad5940.h"
+#include "mbedtls/base64.h"
+
+// *********************** BLE VARS
+BLEServer *pServer = NULL;
+BLECharacteristic *pSensorDataCharacteristic = NULL;
+BLECharacteristic *pControlCharacteristic = NULL;
+BLECharacteristic *pIndicatorCharacteristic = NULL;
+BLECharacteristic *pInterruptCharacteristic = NULL;
+
+#define SERVICE_UUID_SENSOR "9b3333b4-8307-471b-95d1-17fa46507379"
+#define CHARACTERISTIC_SENSOR_DATA "766def80-beba-45d1-bad9-4f80ceba5938"
+#define CHARACTERISTIC_UUID_COMMAND "ea8145ec-d810-471a-877e-177ce5841b63"
+#define CHARACTERRISTIC_UUID_INDICATE "e344743b-a3c0-4bc3-9449-9ef1eb2f8355"
+#define CHARACTERISTIC_UUID_INTERRUPT "9bcec788-0cba-4437-b3b0-b53f0ee37312"
+
+#define CONTROL_COMMAND_INTERRUPT "STOPPED"
+
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+bool nextCombination = false;
+bool statSensorDataInterrupt = false;
+
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer) {
+    deviceConnected = true;
+    BLEDevice::startAdvertising();
+    Serial.println('Client Connected');
+  };
+
+  void onDisconnect(BLEServer *pServer) {
+    deviceConnected = false;
+    Serial.println('Client Disconnected ');
+  }
+};
+
+class MyIndicatorCallbacks : public BLECharacteristicCallbacks {
+ public:
+  void onStatus(BLECharacteristic *pIndicatorCharacteristic, Status status, uint32_t code) override {
+    if (status == BLECharacteristicCallbacks::SUCCESS_INDICATE) {
+      nextCombination = true;
+      Serial.println("ACK received from client!");
+    }
+  };
+};
+
+class InterruptCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (value == CONTROL_COMMAND_INTERRUPT) {
+      statSensorDataInterrupt = true;
+    }
+  }
+};
 
 // mux configuration module
 // ADG706 mux1(4, 5, 6, 7);
@@ -39,6 +96,24 @@ bool collectBioimpedance = false;
 uint32_t datacount = 0;
 
 std::unordered_map<std::string, std::function<void()>> funcMap;
+
+struct DataPacketIndicator {
+  float freq;
+  uint8_t config;
+};
+
+void sendCombinationIdicator(DataPacketIndicator payload) {
+  uint8_t buffer[sizeof(payload)];
+  memcpy(buffer, &payload, sizeof(DataPacketIndicator));
+
+  // Convert to Base64
+  size_t output_len;
+  uint8_t base64_buffer[64];
+  mbedtls_base64_encode(base64_buffer, sizeof(base64_buffer), &output_len, buffer, sizeof(buffer));
+
+  pIndicatorCharacteristic->setValue(base64_buffer, output_len);
+  Serial.printf("Indication sent: config=%d, freq=%.2f\n", payload.config, payload.freq, base64_buffer);
+}
 
 void activate_right_body_mux() {
   mux1.selectChannel(1);
@@ -239,76 +314,67 @@ void AD5940_Main() {
   }
 }
 
-// bool deserializeMessage(const char *topic, Stream &stream) {
-//   Serial.printf("Received message in topic '%s':\n", topic);
-//   JsonDocument doc;
-//   DeserializationError error = deserializeJson(doc, stream);
-//   if (error) {
-//     Serial.println("Failed to deserialize JSON");
-//     return false;
-//   }
-
-//   JsonArray configArray = doc["config"].as<JsonArray>();
-//   config.clear();
-//   for (JsonVariant v : configArray) {
-//     config.push_back(v.as<std::string>());
-//   }
-
-//   frequecies.clear();
-//   JsonArray freqArray = doc["frequecy"].as<JsonArray>();
-//   for (JsonVariant v : freqArray) {
-//     frequecies.push_back(v.as<int>());
-//   }
-
-//   datapoints = doc["datapoints"];
-
-//   sensortype = doc["sensorType"].as<std::string>();
-
-//   Serial.println("Deserialization successful");
-//   return true;
-// }
-
-bool deserializeStringMessage(std::string input) {
-  // Split using ':'
-  config.clear();
-  frequecies.clear();
-  std::vector<std::string> tokens;
-  std::stringstream ss(input);
-  std::string token;
-
-  while (std::getline(ss, token, ':')) {
-    tokens.push_back(token);
-  }
-
-  if (tokens.size() < 4) {
-    return false;
-  }
-
-  std::string sensorType = tokens[0];
-  std::string configStr = tokens[1];    // "fullbody,rightbody"
-  std::string frequiesStr = tokens[2];  // "100,200,300,500"
-  std::string datapointsStr = tokens[3];
-
-  std::stringstream configStream(configStr);
-  while (std::getline(configStream, token, ',')) {
-    config.push_back(token);
-  }
-
-  std::stringstream freqStream(frequiesStr);
-  while (std::getline(freqStream, token, ',')) {
-    frequecies.push_back(std::stoi(token));
-  }
-
-  datapoints = 60;
-
-  sensortype = sensorType;
-
-  return true;
-}
-
 void setup() {
   Serial.begin(115200);
   delay(2000);
+
+  // Create the BLE Device
+  BLEDevice::init("NIN_IMPEDANCE");
+
+  // Create the BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID_SENSOR);
+
+  // Indicator Characteristic
+  pIndicatorCharacteristic =
+      pService->createCharacteristic(CHARACTERRISTIC_UUID_INDICATE, BLECharacteristic::PROPERTY_INDICATE);
+
+  BLE2902 *p2902 = new BLE2902();
+  p2902->setNotifications(true);
+  pIndicatorCharacteristic->addDescriptor(p2902);
+
+  pIndicatorCharacteristic->setCallbacks(new MyIndicatorCallbacks());
+
+  // InterrupCallbacj Characteristic
+  pInterruptCharacteristic =
+      pService->createCharacteristic(CHARACTERISTIC_UUID_INTERRUPT, BLECharacteristic::PROPERTY_WRITE);
+
+  pInterruptCharacteristic->setCallbacks(new InterruptCallback());
+
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID_SENSOR);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  Serial.println("Characteristic defined! Now you can read it in your phone!");
+  Serial.println("Waiting for a client connection to notify...");
+
+  // // Create a BLE Characteristic
+  // pSensorDataCharacteristic = pService->createCharacteristic(
+  //     CHARACTERISTIC_SENSOR_DATA, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
+  //                                     BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
+  // pSensorDataCharacteristic->addDescriptor(new BLE2902());
+
+  // pControlCharacteristic = pService->createCharacteristic(
+  //     CHARACTERRISTIC_UUID_CONTROL, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
+  //                                       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
+
+  // pControlCharacteristic->addDescriptor(new BLE2902());
+
+  // pCommandCharacteristic =
+  //     pService->createCharacteristic(CHARACTERISTIC_UUID_COMMAND, BLECharacteristic::PROPERTY_WRITE);
+  // pCommandCharacteristic->setCallbacks(new ControlCallback());
+
+  // pInterruptCharacteristic =
+  //     pService->createCharacteristic(CHARACTERISTIC_UUID_INTERRUPT, BLECharacteristic::PROPERTY_WRITE);
+
+  // pInterruptCharacteristic->setCallbacks(new InterruptCallback());
 
   mux1.begin();
   mux2.begin();
@@ -352,11 +418,20 @@ void loop() {
           printf("Current Freq: %f\n", freqAD);
           AD5940_Main();
         } else {
-          //  printf("Input command for Config is wrong, not found in funcMap");
         }
       }
     }
-    // collectBioimpedance = false;
-    // SendCommandToMobile("completed", "mobile/bio/command");
+    collectBioimpedance = false;
+  }
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500);                   // give the bluetooth stack the chance to get things ready
+    pServer->startAdvertising();  // restart advertising
+    Serial.println("start advertising");
+    oldDeviceConnected = deviceConnected;
+  }
+  // connecting
+  if (deviceConnected && !oldDeviceConnected) {
+    // do stuff here on connecting
+    oldDeviceConnected = deviceConnected;
   }
 }
