@@ -6,6 +6,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 
+#include <cmath>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -18,15 +19,15 @@
 // *********************** BLE VARS
 BLEServer *pServer = NULL;
 BLECharacteristic *pSensorDataCharacteristic = NULL;
-BLECharacteristic *pControlCharacteristic = NULL;
-BLECharacteristic *pIndicatorCharacteristic = NULL;
+BLECharacteristic *pCommandCharacteristic = NULL;
 BLECharacteristic *pInterruptCharacteristic = NULL;
+BLECharacteristic *pCompletedCharacteristic = NULL;
 
 #define SERVICE_UUID_SENSOR "9b3333b4-8307-471b-95d1-17fa46507379"
 #define CHARACTERISTIC_SENSOR_DATA "766def80-beba-45d1-bad9-4f80ceba5938"
 #define CHARACTERISTIC_UUID_COMMAND "ea8145ec-d810-471a-877e-177ce5841b63"
-#define CHARACTERRISTIC_UUID_INDICATE "e344743b-a3c0-4bc3-9449-9ef1eb2f8355"
 #define CHARACTERISTIC_UUID_INTERRUPT "9bcec788-0cba-4437-b3b0-b53f0ee37312"
+#define CHARACTERISTIC_UUID_COMPLETED "9bcec788-0cba-beba-45d1-b53f0ee37312"
 
 #define CONTROL_COMMAND_INTERRUPT "STOPPED"
 
@@ -34,38 +35,34 @@ bool deviceConnected = false;
 bool oldDeviceConnected = false;
 bool nextCombination = false;
 bool statSensorDataInterrupt = false;
+bool collectBioimpedance = false;
 
-class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *pServer) {
-    deviceConnected = true;
-    BLEDevice::startAdvertising();
-    Serial.println('Client Connected');
-  };
+// define varible for AD5940
+#define APPBUFF_SIZE 512
+uint32_t AppBuff[APPBUFF_SIZE];
+int VECLIMITCOUNTER = 0;
+float freqAD;
+std::string currentConfig;
+const int MAXVECLIMIT = 20;
 
-  void onDisconnect(BLEServer *pServer) {
-    deviceConnected = false;
-    Serial.println('Client Disconnected ');
-  }
+struct BioPhaseData {
+  float bioImpedance;
+  float phaseAngle;
 };
 
-class MyIndicatorCallbacks : public BLECharacteristicCallbacks {
- public:
-  void onStatus(BLECharacteristic *pIndicatorCharacteristic, Status status, uint32_t code) override {
-    if (status == BLECharacteristicCallbacks::SUCCESS_INDICATE) {
-      nextCombination = true;
-      Serial.println("ACK received from client!");
-    }
-  };
+struct Payload {
+  int freq;
+  std::string config;
+  std::vector<BioPhaseData> data;
 };
 
-class InterruptCallback : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) override {
-    std::string value = pCharacteristic->getValue();
-    if (value == CONTROL_COMMAND_INTERRUPT) {
-      statSensorDataInterrupt = true;
-    }
-  }
-};
+// configaration variable
+std::vector<std::string> config;
+std::vector<int> frequecies;
+std::string sensortype;
+int datapoints;
+
+uint32_t datacount = 0;
 
 // mux configuration module
 // ADG706 mux1(4, 5, 6, 7);
@@ -79,40 +76,139 @@ ADG706 mux2(35, 36, 37, 38);
 ADG706 mux3(45, 46, 47, 48);
 ADG706 mux4(8, 9, 10, 3);
 
-// define varible for AD5940
-#define APPBUFF_SIZE 512
-uint32_t AppBuff[APPBUFF_SIZE];
-int VECLIMITCOUNTER = 0;
-float freqAD;
-std::string currentConfig;
-const int MAXVECLIMIT = 20;
+// ✅ Serialize the struct into a byte array
+std::vector<uint8_t> serializePayload(const Payload &payload) {
+  std::vector<uint8_t> buffer;
 
-// configaration variable
-std::vector<std::string> config;
-std::vector<int> frequecies;
-std::string sensortype;
-int datapoints;
-bool collectBioimpedance = false;
-uint32_t datacount = 0;
+  // Add frequency (4 bytes)
+  buffer.insert(buffer.end(), (uint8_t *)&payload.freq, (uint8_t *)&payload.freq + sizeof(payload.freq));
+
+  // Add config string length (2 bytes) + string data
+  uint16_t configLen = payload.config.size();
+  buffer.insert(buffer.end(), (uint8_t *)&configLen, (uint8_t *)&configLen + sizeof(configLen));
+  buffer.insert(buffer.end(), payload.config.begin(), payload.config.end());
+
+  // Add number of BioPhaseData elements (2 bytes)
+  uint16_t dataSize = payload.data.size();
+  buffer.insert(buffer.end(), (uint8_t *)&dataSize, (uint8_t *)&dataSize + sizeof(dataSize));
+
+  // Add BioPhaseData elements
+  for (const auto &data : payload.data) {
+    buffer.insert(buffer.end(), (uint8_t *)&data.bioImpedance,
+                  (uint8_t *)&data.bioImpedance + sizeof(data.bioImpedance));
+    buffer.insert(buffer.end(), (uint8_t *)&data.phaseAngle, (uint8_t *)&data.phaseAngle + sizeof(data.phaseAngle));
+  }
+
+  return buffer;
+}
+
+bool deserializeStringMessage(std::string input) {
+  // Split using ':'
+  config.clear();
+  frequecies.clear();
+  std::vector<std::string> tokens;
+  std::stringstream ss(input);
+  std::string token;
+
+  while (std::getline(ss, token, ':')) {
+    tokens.push_back(token);
+  }
+
+  if (tokens.size() < 4) {
+    return false;
+  }
+
+  std::string sensorType = tokens[0];
+  std::string configStr = tokens[1];    // "fullbody,rightbody"
+  std::string frequiesStr = tokens[2];  // "100,200,300,500"
+  std::string datapointsStr = tokens[3];
+
+  std::stringstream configStream(configStr);
+  while (std::getline(configStream, token, ',')) {
+    config.push_back(token);
+  }
+
+  std::stringstream freqStream(frequiesStr);
+  while (std::getline(freqStream, token, ',')) {
+    frequecies.push_back(std::stoi(token));
+  }
+
+  datapoints = 60;
+
+  sensortype = sensorType;
+
+  return true;
+}
+
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer) {
+    deviceConnected = true;
+    BLEDevice::startAdvertising();
+    Serial.println("Client Connected");
+  };
+
+  void onDisconnect(BLEServer *pServer) {
+    deviceConnected = false;
+    Serial.println("Client Disconnected");
+  }
+};
+
+class CommandCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (!value.empty()) {
+      std::string receivedData = std::string(value.begin(), value.end());
+      bool result = deserializeStringMessage(receivedData);
+      if (result) {
+        collectBioimpedance = true;
+      }
+    } else {
+      Serial.println("No data received.");
+    }
+  }
+};
+
+class InterruptCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) override {
+    std::string value = pCharacteristic->getValue();
+    if (value == CONTROL_COMMAND_INTERRUPT) {
+      statSensorDataInterrupt = true;
+    }
+  }
+};
+
+void SensorDataSetAndNotify(const Payload &payload) {
+  auto buffer = serializePayload(payload);
+  pSensorDataCharacteristic->setValue(buffer.data(), buffer.size());
+  pSensorDataCharacteristic->notify();
+}
+
+void notifyCompletion() {
+  uint8_t value = 0x01;  // Completion signal
+  pCompletedCharacteristic->setValue(&value, 1);
+  pCompletedCharacteristic->notify();  // ✅ Notify the connected app
+  Serial.println("✅ Data collection completed - Notification sent!");
+}
 
 std::unordered_map<std::string, std::function<void()>> funcMap;
 
-struct DataPacketIndicator {
-  float freq;
-  uint8_t config;
-};
+int concatenateIntegers(int i, int j) {
+  // Handle the case where j is 0
+  if (j == 0) {
+    return i * 10;
+  }
 
-void sendCombinationIdicator(DataPacketIndicator payload) {
-  uint8_t buffer[sizeof(payload)];
-  memcpy(buffer, &payload, sizeof(DataPacketIndicator));
+  // Calculate the number of digits in j
+  int j_copy = j;
+  int digits = 0;
+  while (j_copy != 0) {
+    j_copy /= 10;
+    digits++;
+  }
 
-  // Convert to Base64
-  size_t output_len;
-  uint8_t base64_buffer[64];
-  mbedtls_base64_encode(base64_buffer, sizeof(base64_buffer), &output_len, buffer, sizeof(buffer));
-
-  pIndicatorCharacteristic->setValue(base64_buffer, output_len);
-  Serial.printf("Indication sent: config=%d, freq=%.2f\n", payload.config, payload.freq, base64_buffer);
+  // Scale i and add j
+  int result = i * std::pow(10, digits) + j;
+  return result;
 }
 
 void activate_right_body_mux() {
@@ -229,21 +325,8 @@ void AD5940_Main() {
   AppBIACtrl(BIACTRL_START,
              0); /* Control BIA measurement to start. Second parameter has no meaning with this command. */
 
-  JsonDocument doc;
+  std::vector<BioPhaseData> sensorData;
 
-  struct BioPhaseData {
-    float bioImpedance;
-    float phaseAngle;
-  };
-
-  // Create a fixed-size array to store the sensor data.
-  BioPhaseData sensorData[datapoints];
-  // Index to track the current count of data entries.
-  uint32_t sensorDataIndex = 0;
-
-  doc["sensor"] = "BioImpedance";
-  doc["freq"] = freqAD;
-  doc["config"] = currentConfig;
   while (1) {
     // Check if interrupt flag which will be set when interrupt occurred.
     if (AD5940_GetMCUIntFlag()) {
@@ -260,31 +343,21 @@ void AD5940_Main() {
         BioPhaseData tempData;
         tempData.bioImpedance = pImp[i].Magnitude;
         tempData.phaseAngle = pImp[i].Phase * 180 / MATH_PI;
-        // Store data if we haven't exceeded the fixed size
-        if (sensorDataIndex < datapoints) {
-          sensorData[sensorDataIndex++] = tempData;
-        }
+        sensorData.push_back(tempData);
         VECLIMITCOUNTER++;
       }
     }
 
     // When the accumulated data count in this batch reaches the limit, send it.
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
-      JsonArray dataArray = doc.createNestedArray("data");
-      for (uint32_t i = 0; i < sensorDataIndex; i++) {
-        JsonObject entry = dataArray.createNestedObject();
-        entry["bioImpedance"] = sensorData[i].bioImpedance;
-        entry["phaseAngle"] = sensorData[i].phaseAngle;
-      }
-      // Serial.printf("batch:::::");
-      // serializeJson(doc, Serial);
-      // Serial.println();  // Newline for readability
-
-      // Reset for the next batch
+      Payload payload;
+      payload.freq = freqAD;
+      payload.config = currentConfig;
+      payload.data = sensorData;
+      SensorDataSetAndNotify(payload);
+      sensorData.clear();
       delay(50);
       VECLIMITCOUNTER = 0;
-      doc.clear();
-      sensorDataIndex = 0;
     }
 
     // When the total number of datapoints is reached, shut down.
@@ -293,20 +366,14 @@ void AD5940_Main() {
       AppBIACtrl(BIACTRL_SHUTDOWN, 0);
 
       if (VECLIMITCOUNTER > 0) {
-        JsonArray dataArray = doc.createNestedArray("data");
-        for (uint32_t i = 0; i < sensorDataIndex; i++) {
-          JsonObject entry = dataArray.createNestedObject();
-          entry["bioImpedance"] = sensorData[i].bioImpedance;
-          entry["phaseAngle"] = sensorData[i].phaseAngle;
-        }
-        // SendDataToMobile(doc, "mobile/bio/data");
-        // Serial.printf("batch:::::");
-        // serializeJson(doc, Serial);
-        // Serial.println();  // Newline for readability
+        Payload payload;
+        payload.freq = freqAD;
+        payload.config = currentConfig;
+        payload.data = sensorData;
+        SensorDataSetAndNotify(payload);
+        sensorData.clear();
         delay(50);
         VECLIMITCOUNTER = 0;
-        doc.clear();
-        sensorDataIndex = 0;
       }
       printf("{\"type\":\"end\"}\n");
       break;
@@ -328,21 +395,28 @@ void setup() {
   // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID_SENSOR);
 
-  // Indicator Characteristic
-  pIndicatorCharacteristic =
-      pService->createCharacteristic(CHARACTERRISTIC_UUID_INDICATE, BLECharacteristic::PROPERTY_INDICATE);
+  // SensorData Characteristic
+  pSensorDataCharacteristic =
+      pService->createCharacteristic(CHARACTERISTIC_SENSOR_DATA, BLECharacteristic::PROPERTY_NOTIFY);
 
-  BLE2902 *p2902 = new BLE2902();
-  p2902->setNotifications(true);
-  pIndicatorCharacteristic->addDescriptor(p2902);
+  pSensorDataCharacteristic->addDescriptor(new BLE2902());
 
-  pIndicatorCharacteristic->setCallbacks(new MyIndicatorCallbacks());
+  // Conpleted  Characteristic
+  pCompletedCharacteristic =
+      pService->createCharacteristic(CHARACTERISTIC_UUID_COMPLETED, BLECharacteristic::PROPERTY_NOTIFY);
 
-  // InterrupCallbacj Characteristic
+  pCompletedCharacteristic->addDescriptor(new BLE2902());
+
+  // InterruptCallback Characteristic
   pInterruptCharacteristic =
       pService->createCharacteristic(CHARACTERISTIC_UUID_INTERRUPT, BLECharacteristic::PROPERTY_WRITE);
 
   pInterruptCharacteristic->setCallbacks(new InterruptCallback());
+
+  // Command Characteristic
+  pCommandCharacteristic =
+      pService->createCharacteristic(CHARACTERISTIC_UUID_COMMAND, BLECharacteristic::PROPERTY_WRITE);
+  pCommandCharacteristic->setCallbacks(new CommandCallback());
 
   pService->start();
 
@@ -354,27 +428,6 @@ void setup() {
   BLEDevice::startAdvertising();
   Serial.println("Characteristic defined! Now you can read it in your phone!");
   Serial.println("Waiting for a client connection to notify...");
-
-  // // Create a BLE Characteristic
-  // pSensorDataCharacteristic = pService->createCharacteristic(
-  //     CHARACTERISTIC_SENSOR_DATA, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
-  //                                     BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
-  // pSensorDataCharacteristic->addDescriptor(new BLE2902());
-
-  // pControlCharacteristic = pService->createCharacteristic(
-  //     CHARACTERRISTIC_UUID_CONTROL, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE |
-  //                                       BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_INDICATE);
-
-  // pControlCharacteristic->addDescriptor(new BLE2902());
-
-  // pCommandCharacteristic =
-  //     pService->createCharacteristic(CHARACTERISTIC_UUID_COMMAND, BLECharacteristic::PROPERTY_WRITE);
-  // pCommandCharacteristic->setCallbacks(new ControlCallback());
-
-  // pInterruptCharacteristic =
-  //     pService->createCharacteristic(CHARACTERISTIC_UUID_INTERRUPT, BLECharacteristic::PROPERTY_WRITE);
-
-  // pInterruptCharacteristic->setCallbacks(new InterruptCallback());
 
   mux1.begin();
   mux2.begin();
@@ -418,10 +471,12 @@ void loop() {
           printf("Current Freq: %f\n", freqAD);
           AD5940_Main();
         } else {
+          printf("Input command for Config is wrong, not found in funcMap");
         }
       }
     }
-    collectBioimpedance = false;
+    // collectBioimpedance = false;
+    // notifyCompletion();
   }
   if (!deviceConnected && oldDeviceConnected) {
     delay(500);                   // give the bluetooth stack the chance to get things ready
