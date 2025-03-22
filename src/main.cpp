@@ -1,6 +1,5 @@
 #include <ADG706.h>
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -65,16 +64,16 @@ int datapoints;
 uint32_t datacount = 0;
 
 // mux configuration module
-// ADG706 mux1(4, 5, 6, 7);
-// ADG706 mux2(15, 18, 45, 46);
-// ADG706 mux3(35, 36, 37, 38);
-// ADG706 mux4(39, 40, 41, 42);
+ADG706 mux1(4, 5, 6, 7);
+ADG706 mux2(15, 18, 45, 46);
+ADG706 mux3(35, 36, 37, 38);
+ADG706 mux4(39, 40, 41, 42);
 
 // mux configuration board
-ADG706 mux1(4, 5, 6, 7);
-ADG706 mux2(35, 36, 37, 38);
-ADG706 mux3(45, 46, 47, 48);
-ADG706 mux4(8, 9, 10, 3);
+// ADG706 mux1(4, 5, 6, 7);
+// ADG706 mux2(35, 36, 37, 38);
+// ADG706 mux3(45, 46, 47, 48);
+// ADG706 mux4(8, 9, 10, 3);
 
 // ✅ Serialize the struct into a byte array
 std::vector<uint8_t> serializePayload(const Payload &payload) {
@@ -475,8 +474,8 @@ void loop() {
         }
       }
     }
-    // collectBioimpedance = false;
-    // notifyCompletion();
+    collectBioimpedance = false;
+    notifyCompletion();
   }
   if (!deviceConnected && oldDeviceConnected) {
     delay(500);                   // give the bluetooth stack the chance to get things ready
