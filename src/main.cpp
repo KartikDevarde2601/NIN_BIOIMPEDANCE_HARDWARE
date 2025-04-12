@@ -56,12 +56,14 @@ struct Payload {
 };
 
 // configaration variable
+/*
+{1, 5, 50, 100, 200}
+{"RIGHTBODY", "UPPERBODY", "LOWERBODY", "LEFTBODY"}
+*/
 std::vector<std::string> config;
 std::vector<int> frequecies;
 std::string sensortype;
 int datapoints;
-
-uint32_t datacount = 0;
 
 // mux configuration module
 ADG706 mux1(4, 5, 6, 7);
@@ -210,6 +212,43 @@ int concatenateIntegers(int i, int j) {
   return result;
 }
 
+float randomFloat() { return (float)(rand()) / (float)(RAND_MAX); }
+
+int randomInt(int a, int b) {
+  if (a > b) return randomInt(b, a);
+  if (a == b) return a;
+  return a + (rand() % (b - a));
+}
+
+float randomFloat(int a, int b) {
+  if (a > b) return randomFloat(b, a);
+  if (a == b) return a;
+
+  return (float)randomInt(a, b) + randomFloat();
+}
+
+// Function to print BioPhaseData
+void printBioPhaseData(const BioPhaseData &bioData) {
+  Serial.print("Impedance: ");
+  Serial.print(bioData.bioImpedance);
+  Serial.print(",PhaseAngle: ");
+  Serial.println(bioData.phaseAngle);
+}
+
+// Function to print Payload
+void printPayload(const Payload &payload) {
+  Serial.println("Payload Details:");
+  Serial.print("Frequency: ");
+  Serial.println(payload.freq);
+
+  Serial.print("Config: ");
+  Serial.println(payload.config.c_str());
+  Serial.println("Data:");
+  for (const auto &bioData : payload.data) {
+    printBioPhaseData(bioData);
+  }
+}
+
 void activate_right_body_mux() {
   mux1.selectChannel(1);
   mux3.selectChannel(1);
@@ -246,106 +285,23 @@ void activate_lower_body_mux() {
   delay(10);
 }
 
-static int32_t AD5940PlatformCfg(void) {
-  CLKCfg_Type clk_cfg;
-  FIFOCfg_Type fifo_cfg;
-  AGPIOCfg_Type gpio_cfg;
-
-  /* Use hardware reset */
-  AD5940_HWReset();
-  /* Platform configuration */
-  AD5940_Initialize();
-  /* Step1. Configure clock */
-  clk_cfg.ADCClkDiv = ADCCLKDIV_1;
-  clk_cfg.ADCCLkSrc = ADCCLKSRC_HFOSC;
-  clk_cfg.SysClkDiv = SYSCLKDIV_1;
-  clk_cfg.SysClkSrc = SYSCLKSRC_HFOSC;
-  clk_cfg.HfOSC32MHzMode = bFALSE;
-  clk_cfg.HFOSCEn = bTRUE;
-  clk_cfg.HFXTALEn = bFALSE;
-  clk_cfg.LFOSCEn = bTRUE;
-  AD5940_CLKCfg(&clk_cfg);
-  /* Step2. Configure FIFO and Sequencer*/
-  fifo_cfg.FIFOEn = bFALSE;
-  fifo_cfg.FIFOMode = FIFOMODE_FIFO;
-  fifo_cfg.FIFOSize = FIFOSIZE_4KB; /* 4kB for FIFO, The reset 2kB for sequencer */
-  fifo_cfg.FIFOSrc = FIFOSRC_DFT;
-  fifo_cfg.FIFOThresh = 4;   // AppBIACfg.FifoThresh;        /* DFT result. One pair for RCAL, another for Rz. One DFT
-                             // result have real part and imaginary part */
-  AD5940_FIFOCfg(&fifo_cfg); /* Disable to reset FIFO. */
-  fifo_cfg.FIFOEn = bTRUE;
-  AD5940_FIFOCfg(&fifo_cfg); /* Enable FIFO here */
-
-  /* Step3. Interrupt controller */
-
-  AD5940_INTCCfg(AFEINTC_1, AFEINTSRC_ALLINT,
-                 bTRUE); /* Enable all interrupt in Interrupt Controller 1, so we can check INTC flags */
-  AD5940_INTCCfg(AFEINTC_0, AFEINTSRC_DATAFIFOTHRESH,
-                 bTRUE); /* Interrupt Controller 0 will control GP0 to generate interrupt to MCU */
-  AD5940_INTCClrFlag(AFEINTSRC_ALLINT);
-  /* Step4: Reconfigure GPIO */
-  gpio_cfg.FuncSet = GP6_SYNC | GP5_SYNC | GP4_SYNC | GP2_TRIG | GP1_SYNC | GP0_INT;
-  gpio_cfg.InputEnSet = AGPIO_Pin2;
-  gpio_cfg.OutputEnSet = AGPIO_Pin0 | AGPIO_Pin1 | AGPIO_Pin4 | AGPIO_Pin5 | AGPIO_Pin6;
-  gpio_cfg.OutVal = 0;
-  gpio_cfg.PullEnSet = 0;
-
-  AD5940_AGPIOCfg(&gpio_cfg);
-  AD5940_SleepKeyCtrlS(SLPKEY_UNLOCK); /* Allow AFE to enter sleep mode. */
-  return 0;
-}
-
-void AD5940BIAStructInit(float SF, int dlimit) {
-  AppBIACfg_Type *pBIACfg;
-
-  AppBIAGetCfg(&pBIACfg);
-
-  pBIACfg->SeqStartAddr = 0;
-  pBIACfg->MaxSeqLen = 512; /** @todo add checker in function */
-
-  pBIACfg->RcalVal = 10000.0;
-  pBIACfg->DftNum = DFTNUM_8192;
-  pBIACfg->NumOfData = dlimit; /* Never stop until you stop it manually by AppBIACtrl() function */
-  pBIACfg->BiaODR = 20;        /* ODR(Sample Rate) 20Hz */
-  pBIACfg->FifoThresh = 4;     /* 4 */
-  pBIACfg->SinFreq = SF;
-  pBIACfg->ADCSinc3Osr = ADCSINC3OSR_2;
-}
-
 void AD5940_Main() {
-  datacount = 0;
+  int datacount = 0;
   uint32_t temp;
-
-  AD5940PlatformCfg();
-  AD5940BIAStructInit(freqAD, datapoints); /* Configure your parameters in this function */
-  AppBIAInit(
-      AppBuff,
-      APPBUFF_SIZE); /* Initialize BIA application. Provide a buffer, which is used to store sequencer commands */
-  AppBIACtrl(BIACTRL_START,
-             0); /* Control BIA measurement to start. Second parameter has no meaning with this command. */
 
   std::vector<BioPhaseData> sensorData;
 
-  while (1) {
+  while (datacount <= datapoints) {
     // Check if interrupt flag which will be set when interrupt occurred.
-    if (AD5940_GetMCUIntFlag()) {
-      AD5940_ClrMCUIntFlag();  // Clear this flag
-      temp = APPBUFF_SIZE;
-      AppBIAISR(AppBuff, &temp);  // Deal with it and provide a buffer to store data we got
 
-      fImpPol_Type *pImp = (fImpPol_Type *)AppBuff;
-      AppBIACtrl(BIACTRL_GETFREQ, &freqAD);
-
-      /* Process data */
-      for (int i = 0; i < temp; i++) {
-        datacount++;  // Update the total data count
-        BioPhaseData tempData;
-        tempData.bioImpedance = pImp[i].Magnitude;
-        tempData.phaseAngle = pImp[i].Phase * 180 / MATH_PI;
-        sensorData.push_back(tempData);
-        VECLIMITCOUNTER++;
-      }
-    }
+    /* Process data */
+    datacount++;  // Update the total data count
+    BioPhaseData tempData;
+    tempData.bioImpedance = randomFloat(500, 550);
+    tempData.phaseAngle = randomFloat(-10, -1);
+    ;
+    sensorData.push_back(tempData);
+    VECLIMITCOUNTER++;
 
     // When the accumulated data count in this batch reaches the limit, send it.
     if (VECLIMITCOUNTER >= MAXVECLIMIT) {
@@ -354,6 +310,7 @@ void AD5940_Main() {
       payload.config = currentConfig;
       payload.data = sensorData;
       SensorDataSetAndNotify(payload);
+      // printPayload(payload);
       sensorData.clear();
       delay(50);
       VECLIMITCOUNTER = 0;
@@ -361,15 +318,13 @@ void AD5940_Main() {
 
     // When the total number of datapoints is reached, shut down.
     if (datacount >= datapoints) {
-      AppBIAInit(0, 0);
-      AppBIACtrl(BIACTRL_SHUTDOWN, 0);
-
       if (VECLIMITCOUNTER > 0) {
         Payload payload;
         payload.freq = freqAD;
         payload.config = currentConfig;
         payload.data = sensorData;
         SensorDataSetAndNotify(payload);
+        // printPayload(payload);
         sensorData.clear();
         delay(50);
         VECLIMITCOUNTER = 0;
@@ -439,22 +394,8 @@ void setup() {
   funcMap["LEFTBODY"] = activate_left_body_mux;
   funcMap["UPPERBODY"] = activate_upper_body_mux;
   funcMap["LOWERBODY"] = activate_lower_body_mux;
-  // put your setup code here, to run once:
-  AD5940_MCUResourceInit(NULL);
 
   Serial.println("MCU Initialised");
-
-  // reset AD5940
-  Serial.println("Attempting to reset AD5940...");
-  AD5940_HWReset();
-  Serial.println("AD5940 reset!");
-
-  // initialise AD5940 by writing the startup sequence
-  Serial.println("Attempting to initialise AD5940...");
-  AD5940_Initialize();
-  Serial.println("AD5940 initialised!\n");
-  delay(50);
-  Serial.println("BIA init!");
 }
 
 void loop() {
